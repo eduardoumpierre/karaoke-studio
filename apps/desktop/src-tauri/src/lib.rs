@@ -52,6 +52,7 @@ pub fn run() {
             player::player_seek,
             player::player_set_mix,
             player::player_mic_test,
+            player::player_voice,
         ])
         .build(tauri::generate_context!())
         .expect("erro ao construir o aplicativo Tauri");

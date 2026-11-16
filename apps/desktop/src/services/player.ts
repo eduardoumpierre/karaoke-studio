@@ -34,6 +34,35 @@ export interface LoadedInfo {
   hasVocals: boolean;
 }
 
+export interface MicInfo {
+  name: string;
+  sampleRate: number;
+  channels: number;
+}
+
+/** Ajustes da voz ao vivo, nas unidades do motor (ganhos lineares). */
+export interface VoiceSettings {
+  monitor: boolean;
+  volume: number;
+  inputGain: number;
+  gateOn: boolean;
+  gateThreshold: number;
+  /** Efeitos: EQ em dB (−12…12); os demais de 0 a 1; o tempo do eco em ms. */
+  eqLowDb: number;
+  eqMidDb: number;
+  eqHighDb: number;
+  comp: number;
+  reverb: number;
+  reverbSize: number;
+  echo: number;
+  echoMs: number;
+  /** Autotune: ligado, intensidade e velocidade (0 a 1) e notas permitidas (12 bits, bit 0 = Dó). */
+  tuneOn: boolean;
+  tuneAmount: number;
+  tuneSpeed: number;
+  tuneScale: number;
+}
+
 export interface EngineMix {
   master: number;
   vocal: number;
@@ -51,7 +80,8 @@ export type PlayerEvent =
     }
   | { type: "ended" }
   | { type: "error"; message: string }
-  | { type: "micLevel"; peak: number };
+  | { type: "micLevel"; peak: number }
+  | { type: "voice"; bridgeMs: number; targetMs: number; underruns: number; tuneMs: number };
 
 /** O que a interface pode pedir ao motor de áudio (Rust, via Tauri). */
 export interface PlayerService {
@@ -64,6 +94,8 @@ export interface PlayerService {
   seek(seconds: number): Promise<void>;
   setMix(mix: EngineMix): Promise<void>;
   micTest(enable: boolean): Promise<string | null>;
+  /** Liga/desliga o retorno da voz e aplica os ajustes. Devolve o microfone aberto (ou null). */
+  voice(settings: VoiceSettings): Promise<MicInfo | null>;
   onEvent(callback: (event: PlayerEvent) => void): Promise<() => void>;
   /** true quando é só uma simulação (navegador, sem som de verdade). */
   readonly simulated: boolean;
@@ -81,6 +113,7 @@ function tauriPlayer(): PlayerService {
     seek: (seconds) => invoke<void>("player_seek", { seconds }),
     setMix: (mix) => invoke<void>("player_set_mix", { mix }),
     micTest: (enable) => invoke<string | null>("player_mic_test", { enable }),
+    voice: (settings) => invoke<MicInfo | null>("player_voice", { settings }),
     onEvent: (callback) => listen<PlayerEvent>("player-event", (e) => callback(e.payload)),
   };
 }
@@ -96,6 +129,7 @@ export function simulatedPlayer(): PlayerService {
   let position = 0;
   let playing = false;
   let micTimer: ReturnType<typeof setInterval> | undefined;
+  let voiceTimer: ReturnType<typeof setInterval> | undefined;
   let output: string | null = null;
   let input: string | null = null;
   const outputs = [
@@ -154,6 +188,25 @@ export function simulatedPlayer(): PlayerService {
       if (!enable) return null;
       micTimer = setInterval(() => emit({ type: "micLevel", peak: Math.random() * 0.6 }), 33);
       return input ?? inputs[0]!.name;
+    },
+    voice: async (settings) => {
+      if (micTimer) clearInterval(micTimer);
+      if (voiceTimer) clearInterval(voiceTimer);
+      micTimer = undefined;
+      voiceTimer = undefined;
+      if (!settings.monitor) return null;
+      micTimer = setInterval(() => emit({ type: "micLevel", peak: Math.random() * 0.5 }), 33);
+      voiceTimer = setInterval(
+        () => emit({
+            type: "voice",
+            bridgeMs: 25,
+            targetMs: 25,
+            underruns: 0,
+            tuneMs: settings.tuneOn ? 12 : 0,
+          }),
+        500,
+      );
+      return { name: input ?? inputs[0]!.name, sampleRate: 48000, channels: 1 };
     },
     onEvent: async (cb) => {
       listeners.add(cb);

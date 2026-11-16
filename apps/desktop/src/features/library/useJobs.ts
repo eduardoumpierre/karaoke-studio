@@ -6,8 +6,12 @@ import { apiMessage, isActive, latestJobBySong, type Job } from "./format";
 const POLL_MS = 1000;
 
 export interface JobsState {
-  /** O job mais recente de cada música. */
+  /** Todos os jobs recentes (separação e análise), do mais novo para o mais antigo. */
+  jobs: Job[];
+  /** O job de separação mais recente de cada música. */
   bySong: Record<number, Job>;
+  /** Avisa que algo foi enfileirado por fora (ex.: análise): consulta já e passa a acompanhar. */
+  poke: () => void;
   error: string | null;
   separate: (songId: number, force?: boolean) => Promise<void>;
   cancel: (jobId: number) => Promise<void>;
@@ -74,5 +78,10 @@ export function useJobs(api: Api, onFinished: () => void): JobsState {
     [api, refresh],
   );
 
-  return { bySong: latestJobBySong(jobs), error, separate, cancel };
+  const poke = useCallback(() => {
+    setPolling(true);
+    void refresh();
+  }, [refresh]);
+
+  return { jobs, bySong: latestJobBySong(jobs), poke, error, separate, cancel };
 }

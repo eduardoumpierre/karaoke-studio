@@ -1,40 +1,15 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import type { PlayerService } from "../../services/player";
 import type { Song } from "../library/format";
+import { formatShift, keyLabel, MAX_SHIFT, transposeKey, type Mode } from "../analysis/logic";
 import { AudioSettings } from "./AudioSettings";
-import { activePreset, formatTime, PRESETS, type MixState } from "./logic";
-import type { PlayerState } from "./usePlayer";
-
-function Slider({
-  label,
-  value,
-  onChange,
-  disabled,
-  hint,
-}: {
-  label: string;
-  value: number;
-  onChange: (v: number) => void;
-  disabled?: boolean;
-  hint?: string;
-}) {
-  return (
-    <label className="vol" title={hint}>
-      <span>{label}</span>
-      <input
-        type="range"
-        min={0}
-        max={100}
-        value={value}
-        disabled={disabled}
-        onChange={(e) => onChange(Number(e.target.value))}
-        aria-label={label}
-      />
-      <output>{value}%</output>
-    </label>
-  );
-}
+import { Slider } from "./controls";
+import { SingButton, VoiceDrawer } from "../voice/VoicePanel";
+import type { VoiceState } from "../voice/useVoice";
+import { activePreset, PRESETS, type MixState } from "./logic";
+import { SeekBar } from "./SeekBar";
+import { usePeaks, type PlayerState } from "./usePlayer";
 
 function QueuePanel({ player }: { player: PlayerState }) {
   const { queue } = player;
@@ -90,26 +65,100 @@ function QueuePanel({ player }: { player: PlayerState }) {
   );
 }
 
-export function PlayerBar({ player, service }: { player: PlayerState; service: PlayerService }) {
-  const [dragging, setDragging] = useState<number | null>(null);
+function ShiftControl({
+  player,
+  original,
+}: {
+  player: PlayerState;
+  original: { tonic: number; mode: Mode } | null;
+}) {
+  const { shift } = player;
+  const playing = original ? transposeKey(original.tonic, original.mode, shift) : null;
+  return (
+    <div className="shift" role="group" aria-label="Tom da música">
+      <span className="shift-label">Tom</span>
+      <button
+        type="button"
+        className="ghost"
+        onClick={() => player.setShift(shift - 1)}
+        disabled={shift <= -MAX_SHIFT}
+        aria-label="Meio tom abaixo"
+        title="Meio tom abaixo"
+      >
+        ♭
+      </button>
+      <output
+        className={player.shifting ? "shift-value busy" : "shift-value"}
+        title={
+          playing
+            ? `Original: ${keyLabel(original!.tonic, original!.mode)} · Tocando em: ${keyLabel(playing.tonic, playing.mode)}`
+            : "Semitons em relação ao tom original"
+        }
+      >
+        {player.shifting ? "…" : formatShift(shift)}
+      </output>
+      <button
+        type="button"
+        className="ghost"
+        onClick={() => player.setShift(shift + 1)}
+        disabled={shift >= MAX_SHIFT}
+        aria-label="Meio tom acima"
+        title="Meio tom acima"
+      >
+        ♯
+      </button>
+      {shift !== 0 && (
+        <button type="button" className="ghost" onClick={() => player.setShift(0)}>
+          Original
+        </button>
+      )}
+      {playing && <span className="shift-key">{keyLabel(playing.tonic, playing.mode)}</span>}
+    </div>
+  );
+}
+
+export function PlayerBar({
+  player,
+  service,
+  voice,
+  originalKey = null,
+}: {
+  player: PlayerState;
+  service: PlayerService;
+  voice: VoiceState;
+  originalKey?: { tonic: number; mode: Mode } | null;
+}) {
   const [showQueue, setShowQueue] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
+  // Uma gaveta por vez: o que não está em uso fica recolhido para a barra ficar enxuta.
+  const [drawer, setDrawer] = useState<"mixer" | "voice" | null>(null);
+  const toggleDrawer = (name: "mixer" | "voice") => setDrawer((d) => (d === name ? null : name));
   const { queue, mix } = player;
   const song = queue.current;
   const ready = song !== null && player.duration > 0;
-  const shown = dragging ?? player.position;
   const setMix = (patch: Partial<MixState>) => player.setMix({ ...mix, ...patch });
   const preset = activePreset(mix);
+  const peaks = usePeaks(player);
+  const barRef = useRef<HTMLElement>(null);
 
-  const commit = () => {
-    if (dragging !== null) player.seek(dragging);
-    setDragging(null);
-  };
+  // A barra é fixa e muda de altura (voz, ajustes, avisos): reserva esse espaço no fim da página
+  // para ela nunca cobrir a biblioteca.
+  useEffect(() => {
+    const el = barRef.current;
+    if (!el) return;
+    const apply = () =>
+      document.documentElement.style.setProperty("--player-h", `${el.offsetHeight}px`);
+    apply();
+    if (typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver(apply);
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, []);
 
   return (
     <>
       {showQueue && <QueuePanel player={player} />}
-      <footer className="player" aria-label="Player">
+      <footer className="player" aria-label="Player" ref={barRef}>
         {player.error && (
           <div className="player-error" role="alert">
             <span>{player.error}</span>
@@ -120,7 +169,7 @@ export function PlayerBar({ player, service }: { player: PlayerState; service: P
         )}
         <div className="player-main">
           <div className="player-song">
-            <strong>{song ? song.title : "Nada tocando"}</strong>
+            <strong title={song?.title}>{song ? song.title : "Nada tocando"}</strong>
             <span>
               {player.loading
                 ? "Carregando a música…"
@@ -153,78 +202,109 @@ export function PlayerBar({ player, service }: { player: PlayerState; service: P
           </div>
 
           <div className="player-seek">
-            <span className="time">{formatTime(shown)}</span>
-            <input
-              type="range"
-              min={0}
-              max={Math.max(player.duration, 0.1)}
-              step={0.1}
-              value={Math.min(shown, player.duration || 0)}
-              disabled={!ready}
-              onChange={(e) => setDragging(Number(e.target.value))}
-              onPointerUp={commit}
-              onKeyUp={commit}
-              onBlur={commit}
-              aria-label="Posição"
-            />
-            <span className="time">{formatTime(player.duration)}</span>
+            <SeekBar player={player} disabled={!ready} onSeek={player.seek} />
           </div>
+        </div>
 
-          <div className="player-actions">
-            <button type="button" className="ghost" onClick={() => setShowQueue((v) => !v)}>
+        <div className="player-toolbar">
+          <div className="toolbar-group">
+            {song && <ShiftControl player={player} original={originalKey} />}
+          </div>
+          <div className="toolbar-group">
+            <SingButton voice={voice} />
+          </div>
+          <div className="toolbar-group toolbar-right" role="group" aria-label="Painéis">
+            <button
+              type="button"
+              className={drawer === "mixer" ? "tab-btn active" : "tab-btn"}
+              aria-expanded={drawer === "mixer"}
+              onClick={() => toggleDrawer("mixer")}
+            >
+              Mixer
+            </button>
+            <button
+              type="button"
+              className={drawer === "voice" ? "tab-btn active" : "tab-btn"}
+              aria-expanded={drawer === "voice"}
+              onClick={() => toggleDrawer("voice")}
+            >
+              Voz
+            </button>
+            <button
+              type="button"
+              className={showQueue ? "tab-btn active" : "tab-btn"}
+              aria-expanded={showQueue}
+              onClick={() => setShowQueue((v) => !v)}
+            >
               Fila ({queue.queue.length})
             </button>
-            <button type="button" className="ghost" onClick={() => setShowSettings(true)}>
+            <button type="button" className="tab-btn" onClick={() => setShowSettings(true)}>
               Áudio
             </button>
           </div>
         </div>
 
-        <div className="player-mix">
-          <Slider
-            label="Geral"
-            value={mix.masterPercent}
-            onChange={(v) => setMix({ masterPercent: v })}
-          />
-          <Slider
-            label="Voz original"
-            value={mix.vocalPercent}
-            onChange={(v) => setMix({ vocalPercent: v })}
-            disabled={!player.hasVocals}
-            hint={player.hasVocals ? undefined : "Música ainda não separada: não há faixa de voz"}
-          />
-          <Slider
-            label="Instrumental"
-            value={mix.instrumentalPercent}
-            onChange={(v) => setMix({ instrumentalPercent: v })}
-          />
-          <div className="presets" role="group" aria-label="Presets de voz">
-            {PRESETS.map((p) => (
-              <button
-                key={p.id}
-                type="button"
-                className={preset === p.id ? "chip active" : "chip"}
-                disabled={!player.hasVocals}
-                title={p.hint}
-                onClick={() => setMix({ vocalPercent: p.vocalPercent })}
-              >
-                {p.label} · {p.vocalPercent}%
-              </button>
-            ))}
-          </div>
-          <div className="meters" aria-hidden="true">
-            {player.peaks.map((p, i) => (
-              <div className="meter small" key={i}>
-                <div className="meter-fill" style={{ width: `${Math.min(1, p) * 100}%` }} />
+        {drawer === "mixer" && (
+          <div className="drawer" role="region" aria-label="Mixer">
+            <div className="drawer-body">
+              <div className="drawer-grid">
+                <Slider
+                  label="Geral"
+                  value={mix.masterPercent}
+                  onChange={(v) => setMix({ masterPercent: v })}
+                />
+                <Slider
+                  label="Voz original"
+                  value={mix.vocalPercent}
+                  onChange={(v) => setMix({ vocalPercent: v })}
+                  disabled={!player.hasVocals}
+                  hint={
+                    player.hasVocals ? undefined : "Música ainda não separada: não há faixa de voz"
+                  }
+                />
+                <Slider
+                  label="Instrumental"
+                  value={mix.instrumentalPercent}
+                  onChange={(v) => setMix({ instrumentalPercent: v })}
+                />
+                <div className="vol" aria-hidden="true">
+                  <span>Saída</span>
+                  <div className="meters">
+                    {peaks.map((p, i) => (
+                      <div className="meter small" key={i}>
+                        <div className="meter-fill" style={{ width: `${Math.min(1, p) * 100}%` }} />
+                      </div>
+                    ))}
+                  </div>
+                </div>
               </div>
-            ))}
+              <div className="presets" role="group" aria-label="Presets de voz">
+                {PRESETS.map((p) => (
+                  <button
+                    key={p.id}
+                    type="button"
+                    className={preset === p.id ? "chip active" : "chip"}
+                    disabled={!player.hasVocals}
+                    title={p.hint}
+                    onClick={() => setMix({ vocalPercent: p.vocalPercent })}
+                  >
+                    {p.label} · {p.vocalPercent}%
+                  </button>
+                ))}
+              </div>
+              {song && !player.hasVocals && (
+                <p className="hint small">
+                  Tocando o áudio original: separe a voz da música para usar os presets e o controle
+                  de voz.
+                </p>
+              )}
+            </div>
           </div>
-        </div>
-        {song && !player.hasVocals && (
-          <p className="hint player-note">
-            Tocando o áudio original: separe a voz da música para usar os presets e o controle de
-            voz.
-          </p>
+        )}
+        {drawer === "voice" && (
+          <div className="drawer" role="region" aria-label="Voz">
+            <VoiceDrawer voice={voice} />
+          </div>
         )}
       </footer>
       {showSettings && <AudioSettings service={service} onClose={() => setShowSettings(false)} />}

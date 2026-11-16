@@ -1,5 +1,5 @@
 import type { Api } from "@karaoke/api-client";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import { insideTauri, listenForDrops, pickAudioFiles } from "../../services/files";
 import {
@@ -10,7 +10,7 @@ import {
   type Job,
   type Song,
 } from "./format";
-import { useJobs } from "./useJobs";
+import type { JobsState } from "./useJobs";
 import { useLibrary } from "./useLibrary";
 import type { PlayerState } from "../player/usePlayer";
 
@@ -116,9 +116,24 @@ function SongRow({
   );
 }
 
-export function LibraryView({ api, player }: { api: Api; player: PlayerState }) {
+export function LibraryView({
+  api,
+  player,
+  jobs,
+  refreshKey,
+}: {
+  api: Api;
+  player: PlayerState;
+  jobs: JobsState;
+  /** Muda quando algum job termina: a lista de músicas precisa ser recarregada. */
+  refreshKey: number;
+}) {
   const lib = useLibrary(api);
-  const jobs = useJobs(api, lib.reload);
+  const reload = useRef(lib.reload);
+  reload.current = lib.reload;
+  useEffect(() => {
+    if (refreshKey > 0) void reload.current();
+  }, [refreshKey]);
   const [hovering, setHovering] = useState(false);
   const native = insideTauri();
   const { importPaths } = lib;
@@ -181,7 +196,14 @@ export function LibraryView({ api, player }: { api: Api; player: PlayerState }) 
         </div>
       )}
 
-      {lib.error && <p className="error">{lib.error}</p>}
+      {lib.error && (
+        <p className="error">
+          {lib.error}{" "}
+          <button type="button" className="link" onClick={() => void lib.reload()}>
+            Tentar de novo
+          </button>
+        </p>
+      )}
       {jobs.error && <p className="error">{jobs.error}</p>}
 
       {lib.loading ? (

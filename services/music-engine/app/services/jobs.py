@@ -11,6 +11,8 @@ from pathlib import Path
 from ..config import Settings
 from ..db import connect
 from ..models.job import Job
+from .analysis import AnalysisService
+from .analyzer import Analyzer
 from .audio_tools import AudioToolError, Cancelled, encode_flac, normalize_to_wav
 from .library import LibraryError
 from .separator import Separator
@@ -18,7 +20,12 @@ from .separator import Separator
 log = logging.getLogger("karaoke.jobs")
 
 _NOW = "strftime('%Y-%m-%dT%H:%M:%fZ', 'now')"
-_JOB_COLUMNS = "id, song_id, kind, status, stage, progress, error, created_at, updated_at"
+_JOB_COLUMNS = (
+    "id, song_id, kind, status, stage, progress, error, created_at, updated_at, "
+    "(SELECT title FROM songs WHERE songs.id = jobs.song_id) AS song_title"
+)
+# Cada pista tem o seu worker: a separação usa a GPU e a análise só a CPU; uma não espera a outra.
+LANES: tuple[tuple[str, ...], ...] = (("separate",), ("analyze",))
 ACTIVE = ("queued", "running")
 
 
@@ -78,16 +85,22 @@ class JobStore:
         row = self.conn.execute(sql + " ORDER BY id LIMIT 1", args).fetchone()
         return Job(**dict(row)) if row else None
 
-    def create(self, song_id: int, kind: str) -> Job:
+    def create(self, song_id: int, kind: str, force: bool = False) -> Job:
         cur = self.conn.execute(
-            "INSERT INTO jobs (song_id, kind, stage) VALUES (?, ?, 'na fila')", (song_id, kind)
+            "INSERT INTO jobs (song_id, kind, stage, force) VALUES (?, ?, 'na fila', ?)",
+            (song_id, kind, int(force)),
         )
         self.conn.commit()
         return self.get(cur.lastrowid)  # type: ignore[arg-type]
 
-    def claim_next(self) -> Job | None:
+    def claim_next(self, kinds: tuple[str, ...] | None = None) -> Job | None:
+        where = "status = 'queued'"
+        args: tuple[str, ...] = ()
+        if kinds:
+            where += f" AND kind IN ({', '.join('?' for _ in kinds)})"
+            args = kinds
         row = self.conn.execute(
-            "SELECT id FROM jobs WHERE status = 'queued' ORDER BY id LIMIT 1"
+            f"SELECT id FROM jobs WHERE {where} ORDER BY id LIMIT 1", args
         ).fetchone()
         if row is None:
             return None
@@ -139,14 +152,15 @@ class JobStore:
 class JobRunner:
     """Thread única que executa os jobs na ordem em que foram criados."""
 
-    def __init__(self, settings: Settings, separator: Separator) -> None:
+    def __init__(self, settings: Settings, separator: Separator, analyzer: Analyzer) -> None:
         self.settings = settings
         self.separator = separator
-        self._wake = threading.Event()
+        self.analyzer = analyzer
+        self._wakes = [threading.Event() for _ in LANES]
         self._stopping = threading.Event()
         self._lock = threading.Lock()
         self._cancel_events: dict[int, threading.Event] = {}
-        self._thread: threading.Thread | None = None
+        self._threads: list[threading.Thread] = []
 
     # ------------------------------------------------------------ ciclo de vida
     def start(self) -> None:
@@ -158,21 +172,27 @@ class JobRunner:
         finally:
             conn.close()
         shutil.rmtree(self.settings.data_dir / "tmp", ignore_errors=True)
-        self._thread = threading.Thread(target=self._loop, name="job-runner", daemon=True)
-        self._thread.start()
-        self._wake.set()  # pode haver jobs na fila de uma execução anterior
+        for kinds, wake in zip(LANES, self._wakes, strict=True):
+            thread = threading.Thread(
+                target=self._loop, args=(kinds, wake), name=f"job-{kinds[0]}", daemon=True
+            )
+            thread.start()
+            self._threads.append(thread)
+            wake.set()  # pode haver jobs na fila de uma execução anterior
 
     def stop(self) -> None:
         self._stopping.set()
         with self._lock:
             for event in self._cancel_events.values():
                 event.set()
-        self._wake.set()
-        if self._thread:
-            self._thread.join(timeout=15)
+        for wake in self._wakes:
+            wake.set()
+        for thread in self._threads:
+            thread.join(timeout=15)
 
     def notify(self) -> None:
-        self._wake.set()
+        for wake in self._wakes:
+            wake.set()
 
     # ------------------------------------------------------------ cancelamento
     def cancel(self, job_id: int) -> Job:
@@ -193,18 +213,18 @@ class JobRunner:
             conn.close()
 
     # ------------------------------------------------------------ worker
-    def _loop(self) -> None:
+    def _loop(self, kinds: tuple[str, ...], wake: threading.Event) -> None:
         conn = connect(self.settings.db_path)
         store = JobStore(conn)
         try:
             while not self._stopping.is_set():
                 with self._lock:
-                    job = store.claim_next()
+                    job = store.claim_next(kinds)
                     if job:
                         event = self._cancel_events[job.id] = threading.Event()
                 if job is None:
-                    self._wake.wait()
-                    self._wake.clear()
+                    wake.wait()
+                    wake.clear()
                     continue
                 try:
                     self._execute(store, job, event)
@@ -217,13 +237,16 @@ class JobRunner:
     def _execute(self, store: JobStore, job: Job, cancel: threading.Event) -> None:
         log.info("job %d (%s) iniciado, música %d", job.id, job.kind, job.song_id)
         try:
-            if job.kind != "separate":
+            if job.kind == "separate":
+                self._separate(store, job, cancel)
+            elif job.kind == "analyze":
+                self._analyze(store, job, cancel)
+            else:
                 raise AudioToolError(f"Tipo de job desconhecido: {job.kind}")
-            self._separate(store, job, cancel)
         except Cancelled:
             log.info("job %d cancelado", job.id)
             store.finish(job.id, "cancelled")
-        except AudioToolError as exc:
+        except (AudioToolError, LibraryError) as exc:
             log.error("job %d falhou: %s", job.id, exc)
             store.finish(job.id, "failed", str(exc))
         except Exception as exc:
@@ -232,6 +255,19 @@ class JobRunner:
         else:
             log.info("job %d concluído", job.id)
             store.finish(job.id, "done")
+
+    def _analyze(self, store: JobStore, job: Job, cancel: threading.Event) -> None:
+        row = store.conn.execute("SELECT force FROM jobs WHERE id = ?", (job.id,)).fetchone()
+        last = {"stage": "", "value": -1.0}
+
+        def report(value: float, stage: str) -> None:
+            if stage != last["stage"] or value - last["value"] >= 0.01:
+                last.update(stage=stage, value=value)
+                store.update_progress(job.id, stage, value)
+
+        AnalysisService(store.conn, self.settings.data_dir, self.analyzer).run(
+            job.song_id, bool(row and row["force"]), report, cancel
+        )
 
     def _separate(self, store: JobStore, job: Job, cancel: threading.Event) -> None:
         row = store.conn.execute(

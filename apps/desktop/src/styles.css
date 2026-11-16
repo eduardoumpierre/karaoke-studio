@@ -137,7 +137,8 @@ button {
 
 .shell {
   max-width: 1040px;
-  padding-bottom: 260px; /* espaço para o player fixo */
+  /* espaço para o player fixo: a altura real é medida pelo PlayerBar (--player-h) */
+  padding-bottom: calc(var(--player-h, 260px) + 24px);
 }
 
 .library {
@@ -360,7 +361,7 @@ button:disabled {
   right: 0;
   bottom: 0;
   z-index: 5;
-  padding: 12px 24px 14px;
+  padding: 10px 24px 10px;
   background: var(--card);
   border-top: 1px solid var(--border);
   box-shadow: 0 -8px 24px rgb(0 0 0 / 0.18);
@@ -374,7 +375,7 @@ button:disabled {
 
 .player-main {
   display: grid;
-  grid-template-columns: minmax(160px, 1fr) auto minmax(240px, 2fr) auto;
+  grid-template-columns: minmax(180px, 1fr) auto minmax(240px, 2fr);
   align-items: center;
   gap: 20px;
 }
@@ -410,25 +411,12 @@ button:disabled {
   gap: 10px;
 }
 
-.player-seek input {
-  flex: 1;
-  accent-color: var(--accent);
-}
-
 .time {
   font-variant-numeric: tabular-nums;
   color: var(--muted);
   font-size: 0.85rem;
   min-width: 2.6em;
   text-align: center;
-}
-
-.player-mix {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 10px 24px;
-  margin-top: 10px;
 }
 
 .vol {
@@ -722,4 +710,515 @@ button.chip.active {
 .hint.small {
   font-size: 0.8rem;
   text-align: center;
+}
+
+.analysis {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.analysis-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 24px;
+}
+
+.metric h3 {
+  margin: 0 0 8px;
+}
+
+.metric-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.metric input,
+.metric select {
+  font: inherit;
+  padding: 8px 10px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--fg);
+}
+
+.metric input[type="number"] {
+  width: 6rem;
+  font-size: 1.4rem;
+  font-weight: 700;
+}
+
+.metric-big {
+  font-size: 1.6rem;
+  font-weight: 700;
+  margin: 4px 0;
+}
+
+.shift {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 0 0;
+}
+
+.shift-label {
+  font-weight: 600;
+}
+
+.shift-value {
+  min-width: 4.5rem;
+  text-align: center;
+  font-weight: 700;
+}
+
+.shift-value.busy {
+  color: var(--muted);
+}
+
+.shift-key {
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+
+.sing {
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--card);
+  color: var(--fg);
+  padding: 6px 16px;
+  white-space: nowrap;
+}
+
+.sing.on {
+  background: var(--bad);
+  border-color: var(--bad);
+  color: #fff;
+}
+
+/* Janelas baixas: a barra não pode passar de metade da altura. */
+.player {
+  max-height: 55vh;
+  overflow-y: auto;
+}
+
+button.link {
+  background: none;
+  border: none;
+  padding: 0;
+  color: inherit;
+  text-decoration: underline;
+  cursor: pointer;
+  font: inherit;
+}
+
+.progress-box {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-bottom: 12px;
+}
+
+.progress-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  font-size: 0.9rem;
+}
+
+.progress-head span {
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.progress {
+  height: 8px;
+  border-radius: 4px;
+  overflow: hidden;
+  background: color-mix(in srgb, var(--fg) 12%, transparent);
+}
+
+.progress-fill {
+  height: 100%;
+  background: var(--accent);
+  transition: width 400ms ease;
+}
+
+/* Barra do player em duas linhas; mixer e voz ficam em gavetas. */
+.player-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 8px 16px;
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid var(--border);
+}
+
+.toolbar-group {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.toolbar-right {
+  margin-left: auto;
+}
+
+.sing-wrap {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.voice-meter {
+  width: 140px;
+}
+
+.voice-meter.mini {
+  width: 72px;
+}
+
+button.tab-btn {
+  padding: 5px 12px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 0.85rem;
+}
+
+button.tab-btn:hover {
+  color: var(--fg);
+  background: color-mix(in srgb, var(--fg) 8%, transparent);
+}
+
+button.tab-btn.active {
+  color: var(--fg);
+  border-color: var(--border);
+  background: color-mix(in srgb, var(--accent) 22%, transparent);
+}
+
+.drawer {
+  margin-top: 8px;
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--fg) 4%, transparent);
+}
+
+.drawer-body {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.drawer-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+  gap: 10px 28px;
+}
+
+.drawer-grid .vol span {
+  min-width: 7.5em;
+}
+
+.drawer-grid .vol input[type="range"] {
+  flex: 1;
+  width: auto;
+}
+
+.drawer .hint {
+  margin: 0;
+  text-align: left;
+}
+
+.shift-label {
+  color: var(--muted);
+  font-weight: 500;
+}
+
+.drawer-grid .vol output {
+  min-width: 4em;
+  white-space: nowrap;
+  text-align: right;
+}
+
+.progress-box .hint {
+  text-align: left;
+  margin: 0;
+}
+
+.tabs-row {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.tasks {
+  position: relative;
+}
+
+button.tasks-btn {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 14px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--card);
+  color: var(--fg);
+}
+
+button.tasks-btn.open {
+  border-color: var(--accent);
+}
+
+.tasks-badge {
+  min-width: 1.4em;
+  padding: 0 6px;
+  border-radius: 999px;
+  background: var(--accent);
+  color: #fff;
+  font-size: 0.75rem;
+  line-height: 1.5;
+  text-align: center;
+}
+
+.tasks-pop {
+  position: absolute;
+  right: 0;
+  top: calc(100% + 6px);
+  z-index: 8;
+  width: min(380px, 92vw);
+  max-height: 60vh;
+  overflow-y: auto;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--card);
+  box-shadow: 0 12px 32px rgb(0 0 0 / 0.25);
+}
+
+.tasks-pop ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.task {
+  display: grid;
+  gap: 3px;
+  padding: 8px 0;
+  border-bottom: 1px solid var(--border);
+  font-size: 0.85rem;
+}
+
+.task:last-child {
+  border-bottom: none;
+}
+
+.task-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.task-head strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.task-kind,
+.task-state {
+  color: var(--muted);
+}
+
+.task.failed .task-state {
+  color: var(--bad);
+}
+
+.task progress {
+  width: 100%;
+  height: 6px;
+}
+
+.tasks-clear {
+  margin-top: 6px;
+  color: var(--muted);
+  font-size: 0.8rem;
+}
+
+.tasks-pop .hint {
+  margin: 0;
+  text-align: left;
+}
+
+.task progress {
+  accent-color: var(--accent);
+}
+
+.segmented {
+  display: inline-flex;
+  align-self: flex-start;
+  padding: 2px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+}
+
+.segmented button {
+  padding: 4px 14px;
+  border: none;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 0.85rem;
+}
+
+.segmented button[aria-selected="true"] {
+  background: var(--accent);
+  color: #fff;
+}
+
+.drawer .presets {
+  flex-wrap: wrap;
+  align-items: center;
+}
+
+.drawer .voice-adjust summary {
+  cursor: pointer;
+  color: var(--muted);
+  margin-bottom: 8px;
+}
+
+/* Barra de tempo própria: área de clique alta, trilho fino. */
+.seek {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+}
+
+.seek-track {
+  position: relative;
+  flex: 1;
+  height: 28px;
+  cursor: pointer;
+  touch-action: none;
+  user-select: none;
+  outline: none;
+}
+
+.seek-track[aria-disabled="true"] {
+  cursor: default;
+  opacity: 0.45;
+}
+
+.seek-rail {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 50%;
+  height: 5px;
+  transform: translateY(-50%);
+  border-radius: 3px;
+  background: color-mix(in srgb, var(--fg) 16%, transparent);
+  overflow: hidden;
+  transition: height 0.12s;
+}
+
+.seek-track:hover .seek-rail,
+.seek-track:focus-visible .seek-rail,
+.seek-track.dragging .seek-rail {
+  height: 8px;
+}
+
+.seek-fill {
+  height: 100%;
+  background: var(--accent);
+}
+
+.seek-thumb {
+  position: absolute;
+  top: 50%;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: var(--accent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 25%, transparent);
+  transform: translate(-50%, -50%) scale(0);
+  transition: transform 0.12s;
+  pointer-events: none;
+}
+
+.seek-track:hover .seek-thumb,
+.seek-track:focus-visible .seek-thumb,
+.seek-track.dragging .seek-thumb {
+  transform: translate(-50%, -50%) scale(1);
+}
+
+.seek-track:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: 6px;
+}
+
+.seek-tip {
+  position: absolute;
+  bottom: calc(100% + 2px);
+  transform: translateX(-50%);
+  padding: 2px 8px;
+  border-radius: 6px;
+  background: var(--fg);
+  color: var(--card);
+  font-size: 0.75rem;
+  font-variant-numeric: tabular-nums;
+  pointer-events: none;
+  white-space: nowrap;
+}
+
+.lyric-seek {
+  all: unset;
+  display: block;
+  width: 100%;
+  cursor: pointer;
+  border-radius: 8px;
+}
+
+.lyric-seek:hover {
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+}
+
+.lyric-seek:focus-visible {
+  outline: 2px solid var(--accent);
+}
+
+.check-row {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-weight: 600;
+  margin-bottom: 0.4rem;
+}
+
+.inline-selects {
+  display: inline-flex;
+  gap: 0.4rem;
+}
+
+.vol select {
+  grid-column: span 1;
+  padding: 0.25rem 0.4rem;
+  border-radius: 8px;
+  border: 1px solid var(--border, #d9d9e3);
+  background: var(--surface, #fff);
+  font: inherit;
 }

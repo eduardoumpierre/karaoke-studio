@@ -11,6 +11,7 @@ dependencies = [
 [dependency-groups]
 dev = [
     "httpx2>=2.0",
+    "numpy",
     "pytest>=8",
     "ruff>=0.7",
 ]
@@ -22,6 +23,7 @@ ml = [
     "demucs",
     "soundfile",
     "numpy",
+    "librosa>=0.10",
 ]
 
 # Windows e Linux: PyTorch com CUDA 12.4. macOS: PyTorch do PyPI (tem MPS no Apple Silicon).

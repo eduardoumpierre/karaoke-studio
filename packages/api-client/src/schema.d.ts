@@ -211,10 +211,153 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/songs/{song_id}/analysis": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Analysis */
+        get: operations["getAnalysis"];
+        /** Edit Analysis */
+        put: operations["editAnalysis"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/songs/{song_id}/analysis/run": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Run Analysis
+         * @description Põe a análise na fila de tarefas e responde na hora; o andamento vem do GET.
+         */
+        post: operations["runAnalysis"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/songs/{song_id}/pitch": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Pitch */
+        get: operations["getPitch"];
+        /**
+         * Set Pitch
+         * @description Define o tom da música e devolve os arquivos para tocar (renderiza o que faltar).
+         */
+        put: operations["setPitch"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/songs/{song_id}/pitch/cache": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /** Clear Pitch Cache */
+        delete: operations["clearPitchCache"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
+        /** Analysis */
+        Analysis: {
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "none" | "done";
+            /** Bpm */
+            bpm?: number | null;
+            /**
+             * Bpm Manual
+             * @default false
+             */
+            bpm_manual: boolean;
+            /**
+             * Key Tonic
+             * @description 0 = Dó … 11 = Si
+             */
+            key_tonic?: number | null;
+            /** Key Mode */
+            key_mode?: ("major" | "minor") | null;
+            /** Key Confidence */
+            key_confidence?: number | null;
+            /**
+             * Key Manual
+             * @default false
+             */
+            key_manual: boolean;
+            /**
+             * Analyzed At
+             * @description Quando a última análise terminou (UTC)
+             */
+            analyzed_at?: string | null;
+            /**
+             * Running
+             * @default false
+             */
+            running: boolean;
+            /** Progress */
+            progress?: number | null;
+            /** Stage */
+            stage?: string | null;
+            /** Elapsed Seconds */
+            elapsed_seconds?: number | null;
+            /**
+             * Queued
+             * @default false
+             */
+            queued: boolean;
+            /**
+             * Error
+             * @description Motivo da última análise ter falhado
+             */
+            error?: string | null;
+        };
+        /**
+         * AnalysisEdit
+         * @description Só os campos enviados mudam; ao editar, ficam marcados como definidos pelo usuário.
+         */
+        AnalysisEdit: {
+            /** Bpm */
+            bpm?: number | null;
+            /** Key Tonic */
+            key_tonic?: number | null;
+            /** Key Mode */
+            key_mode?: ("major" | "minor") | null;
+        };
         /** ApiError */
         ApiError: {
             /** Code */
@@ -287,6 +430,8 @@ export interface components {
             created_at: string;
             /** Updated At */
             updated_at: string;
+            /** Song Title */
+            song_title?: string | null;
         };
         /** LyricLine */
         LyricLine: {
@@ -335,6 +480,35 @@ export interface components {
         OffsetRequest: {
             /** Offset Ms */
             offset_ms: number;
+        };
+        /** Pitch */
+        Pitch: {
+            /**
+             * Semitones
+             * @description Transposição atual, em semitons (0 = original)
+             */
+            semitones: number;
+            /**
+             * Rendered
+             * @description Tons já prontos no disco
+             * @default []
+             */
+            rendered: number[];
+            /**
+             * Cache Bytes
+             * @default 0
+             */
+            cache_bytes: number;
+        };
+        /** PitchRequest */
+        PitchRequest: {
+            /** Semitones */
+            semitones: number;
+        };
+        /** PitchResult */
+        PitchResult: {
+            pitch: components["schemas"]["Pitch"];
+            audio: components["schemas"]["AudioFiles"];
         };
         /** Song */
         Song: {
@@ -1200,6 +1374,349 @@ export interface operations {
             };
             /** @description Service Unavailable */
             503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+        };
+    };
+    getAnalysis: {
+        parameters: {
+            query?: never;
+            header?: {
+                "X-Karaoke-Token"?: string | null;
+            };
+            path: {
+                song_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Analysis"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+        };
+    };
+    editAnalysis: {
+        parameters: {
+            query?: never;
+            header?: {
+                "X-Karaoke-Token"?: string | null;
+            };
+            path: {
+                song_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AnalysisEdit"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Analysis"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+        };
+    };
+    runAnalysis: {
+        parameters: {
+            query?: {
+                force?: boolean;
+            };
+            header?: {
+                "X-Karaoke-Token"?: string | null;
+            };
+            path: {
+                song_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Analysis"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+        };
+    };
+    getPitch: {
+        parameters: {
+            query?: never;
+            header?: {
+                "X-Karaoke-Token"?: string | null;
+            };
+            path: {
+                song_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Pitch"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Unprocessable Entity */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+        };
+    };
+    setPitch: {
+        parameters: {
+            query?: never;
+            header?: {
+                "X-Karaoke-Token"?: string | null;
+            };
+            path: {
+                song_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PitchRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PitchResult"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Unprocessable Entity */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+        };
+    };
+    clearPitchCache: {
+        parameters: {
+            query?: never;
+            header?: {
+                "X-Karaoke-Token"?: string | null;
+            };
+            path: {
+                song_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Pitch"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Unprocessable Entity */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
                 headers: {
                     [name: string]: unknown;
                 };

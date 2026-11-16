@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import logging
+import multiprocessing
 import os
 import socket
 import sys
@@ -64,4 +65,5 @@ def main() -> int:
 
 
 if __name__ == "__main__":
+    multiprocessing.freeze_support()  # necessário para processos filhos quando congelado
     raise SystemExit(main())

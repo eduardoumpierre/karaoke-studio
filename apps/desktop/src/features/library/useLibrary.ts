@@ -25,6 +25,9 @@ export interface LibraryState {
   reload: () => Promise<void>;
 }
 
+/** Tempo máximo esperando a lista antes de desistir e mostrar um erro. */
+export const LIST_TIMEOUT_MS = 15_000;
+
 export function useLibrary(api: Api): LibraryState {
   const [songs, setSongs] = useState<Song[]>([]);
   const [query, setQuery] = useState("");
@@ -39,8 +42,13 @@ export function useLibrary(api: Api): LibraryState {
   const refresh = useCallback(
     async (q: string) => {
       const ticket = ++latest.current;
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), LIST_TIMEOUT_MS);
       try {
-        const { data, error: apiError } = await api.GET("/songs", { params: { query: { q } } });
+        const { data, error: apiError } = await api.GET("/songs", {
+          params: { query: { q } },
+          signal: controller.signal,
+        });
         if (ticket !== latest.current) return; // chegou uma resposta mais nova
         if (data) {
           setSongs(data);
@@ -49,8 +57,15 @@ export function useLibrary(api: Api): LibraryState {
           setError(`Não foi possível carregar a biblioteca: ${JSON.stringify(apiError)}`);
         }
       } catch (e) {
-        if (ticket === latest.current) setError(e instanceof Error ? e.message : String(e));
+        if (ticket === latest.current) {
+          setError(
+            controller.signal.aborted
+              ? "O motor de música demorou demais para responder."
+              : `Não foi possível carregar a biblioteca: ${e instanceof Error ? e.message : String(e)}`,
+          );
+        }
       } finally {
+        clearTimeout(timer);
         if (ticket === latest.current) setLoading(false);
       }
     },

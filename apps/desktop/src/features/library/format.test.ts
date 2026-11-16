@@ -8,6 +8,7 @@ import {
   describeJob,
   formatTechnical,
   isActive,
+  describeTask,
   latestJobBySong,
   summarizeImport,
   type Job,
@@ -111,5 +112,22 @@ describe("jobs", () => {
     ]);
     expect(result[1]?.id).toBe(5);
     expect(result[2]?.id).toBe(4);
+  });
+
+  it("ignora análises ao escolher o job de separação da música", () => {
+    const result = latestJobBySong([
+      job({ id: 9, song_id: 1, kind: "analyze", status: "running" }),
+      job({ id: 7, song_id: 1, kind: "separate", status: "done" }),
+    ]);
+    expect(result[1]?.id).toBe(7);
+  });
+
+  it("descreve o estado de uma tarefa", () => {
+    expect(describeTask(job({ status: "queued" }))).toBe("Na fila");
+    expect(
+      describeTask(job({ status: "running", stage: "Detectando o tom", progress: 0.71 })),
+    ).toBe("Detectando o tom · 71%");
+    expect(describeTask(job({ status: "done" }))).toBe("Concluída");
+    expect(describeTask(job({ status: "failed", error: "sem ffmpeg" }))).toBe("Falhou: sem ffmpeg");
   });
 });

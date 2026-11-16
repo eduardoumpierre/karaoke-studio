@@ -31,6 +31,11 @@ def default_data_dir() -> Path:
 class Settings:
     token: str
     data_dir: Path
+    warm_up: bool = False  # compila o numba em segundo plano ao iniciar (só no app real)
+
+    @property
+    def numba_cache_dir(self) -> Path:
+        return self.data_dir / "numba-cache"
 
     @property
     def log_dir(self) -> Path:
@@ -46,4 +51,4 @@ class Settings:
         if len(token) < 16:
             raise RuntimeError("KARAOKE_TOKEN ausente ou curto demais (mínimo 16 caracteres).")
         data_dir = Path(os.environ.get("KARAOKE_DATA_DIR") or default_data_dir())
-        return cls(token=token, data_dir=data_dir)
+        return cls(token=token, data_dir=data_dir, warm_up=True)

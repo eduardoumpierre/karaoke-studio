@@ -11,6 +11,8 @@ use std::sync::{Arc, Mutex};
 
 use cpal::{FromSample, Sample};
 
+use crate::voice::{VoiceOut, VoiceShared};
+
 /// Duração da rampa de fade em segundos.
 const FADE_SECONDS: f32 = 0.008;
 /// Constante de tempo da suavização de volume em segundos.
@@ -100,6 +102,10 @@ pub struct Shared {
     pub peak_r: AtomicU32,
     generation: AtomicU64,
     slot: Mutex<Option<(Arc<Loaded>, usize)>>,
+    /// Ajustes e medidas da voz ao vivo.
+    pub voice: Arc<VoiceShared>,
+    voice_generation: AtomicU64,
+    voice_slot: Mutex<Option<VoiceOut>>,
 }
 
 impl Shared {
@@ -116,6 +122,9 @@ impl Shared {
             peak_r: AtomicU32::new(0),
             generation: AtomicU64::new(0),
             slot: Mutex::new(None),
+            voice: VoiceShared::new(),
+            voice_generation: AtomicU64::new(0),
+            voice_slot: Mutex::new(None),
         })
     }
 
@@ -123,6 +132,12 @@ impl Shared {
     pub fn install(&self, loaded: Arc<Loaded>, start_frame: usize) {
         *self.slot.lock().unwrap() = Some((loaded, start_frame));
         self.generation.fetch_add(1, Ordering::Release);
+    }
+
+    /// Liga (`Some`) ou desliga (`None`) a voz ao vivo no callback da saída.
+    pub fn install_voice(&self, voice: Option<VoiceOut>) {
+        *self.voice_slot.lock().unwrap() = voice;
+        self.voice_generation.fetch_add(1, Ordering::Release);
     }
 
     pub fn set_mix(&self, mix: Mix) {
@@ -163,6 +178,8 @@ fn soft_limit(x: f32) -> f32 {
 pub struct Playback {
     shared: Arc<Shared>,
     seen_generation: u64,
+    seen_voice_generation: u64,
+    voice: Option<VoiceOut>,
     loaded: Option<Arc<Loaded>>,
     pos: usize,
     pending: Option<Pending>,
@@ -182,6 +199,8 @@ impl Playback {
         let v_instrumental = shared.instrumental.load();
         Playback {
             seen_generation: shared.generation.load(Ordering::Acquire),
+            seen_voice_generation: shared.voice_generation.load(Ordering::Acquire),
+            voice: None,
             shared,
             loaded: None,
             pos: 0,
@@ -210,10 +229,26 @@ impl Playback {
         }
     }
 
+    /// Pega a voz nova (ou o pedido de desligar), se houver; mesmo esquema do `poll_install`.
+    fn poll_voice(&mut self) {
+        let generation = self.shared.voice_generation.load(Ordering::Acquire);
+        if generation == self.seen_voice_generation {
+            return;
+        }
+        if let Ok(mut slot) = self.shared.voice_slot.try_lock() {
+            self.voice = slot.take();
+            self.seen_voice_generation = generation;
+        }
+    }
+
     /// Preenche `out` (intercalado, `channels` canais) com o próximo trecho.
     pub fn render<T: Sample + FromSample<f32>>(&mut self, out: &mut [T], channels: usize) {
         let channels = channels.max(1);
         self.poll_install();
+        self.poll_voice();
+        if let Some(v) = &mut self.voice {
+            v.begin_block();
+        }
         let seek = self.shared.seek_to.swap(-1, Ordering::AcqRel);
         if seek >= 0 && self.loaded.is_some() {
             self.pending = Some(Pending::Seek(seek as usize));
@@ -270,12 +305,16 @@ impl Playback {
                             r += v[i + 1] * self.v_vocal;
                         }
                         let g = self.gain * self.v_master;
-                        l = soft_limit(l * g);
-                        r = soft_limit(r * g);
+                        l *= g;
+                        r *= g;
                         self.pos += 1;
                     }
                 }
             }
+            // A voz ao vivo soma com a música (que pode estar parada) e o limitador vale para os dois.
+            let (vl, vr) = self.voice.as_mut().map_or((0.0, 0.0), |v| v.next_stereo());
+            l = soft_limit(l + vl);
+            r = soft_limit(r + vr);
             peak_l = peak_l.max(l.abs());
             peak_r = peak_r.max(r.abs());
             match channels {
@@ -614,5 +653,111 @@ mod tests {
         assert_eq!(l.instrumental.len(), 10);
         assert_eq!(l.vocals.as_ref().unwrap().len(), 10);
         assert_eq!(&l.instrumental[7..], &[0.0; 3]);
+    }
+
+    // ---- voz ao vivo ------------------------------------------------------------------
+
+    /// Microfone simulado: um tom de 400 Hz que continua sendo escrito a cada bloco.
+    struct Mic {
+        ring: Arc<crate::voice::Ring>,
+        written: usize,
+        amp: f32,
+    }
+
+    impl Mic {
+        fn feed(&mut self, n: usize) {
+            let (start, amp) = (self.written, self.amp);
+            self.ring.write(n, |i| {
+                amp * (2.0 * std::f32::consts::PI * 400.0 * (start + i) as f32 / RATE as f32).sin()
+            });
+            self.written += n;
+        }
+
+        /// Renderiza `frames` em blocos de 480, alimentando o microfone a cada bloco.
+        fn render(&mut self, pb: &mut Playback, frames: usize) -> Vec<f32> {
+            let mut all = Vec::new();
+            for _ in 0..frames / 480 {
+                self.feed(480);
+                all.extend(render_n(pb, 480));
+            }
+            all
+        }
+    }
+
+    fn with_voice(shared: &Arc<Shared>, amp: f32) -> Mic {
+        use crate::voice::Ring;
+        let ring = Ring::new();
+        shared.voice.monitor.store(true, Ordering::Relaxed);
+        shared.voice.volume.store(1.0);
+        shared.voice.gate_on.store(false, Ordering::Relaxed);
+        shared.install_voice(Some(VoiceOut::new(
+            ring.clone(),
+            shared.voice.clone(),
+            RATE,
+            RATE,
+        )));
+        let mut mic = Mic {
+            ring,
+            written: 0,
+            amp,
+        };
+        mic.feed(2400); // estoque inicial
+        mic
+    }
+
+    fn rms_of(x: &[f32]) -> f32 {
+        (x.iter().map(|v| v * v).sum::<f32>() / x.len() as f32).sqrt()
+    }
+
+    #[test]
+    fn live_voice_is_heard_even_with_no_music_loaded_or_paused() {
+        let shared = Shared::new(Mix::default());
+        let mut pb = Playback::new(shared.clone(), RATE);
+        let mut mic = with_voice(&shared, 0.5);
+        let out = mic.render(&mut pb, 9600);
+        let tail = &out[2 * 4800..];
+        assert!(rms_of(tail) > 0.3, "voz muda: {}", rms_of(tail));
+        // dois canais iguais (voz centralizada)
+        assert!(tail.chunks(2).all(|f| (f[0] - f[1]).abs() < 1e-6));
+        assert_eq!(shared.voice.underruns.load(Ordering::Relaxed), 0);
+    }
+
+    #[test]
+    fn voice_adds_to_the_music_without_changing_it_and_stays_below_one() {
+        let (shared, mut pb) = setup(None, stereo(96_000, |_| (0.3, 0.3)));
+        shared.playing.store(true, Ordering::Release);
+        render_n(&mut pb, 2000); // sobe o fade
+        let plain = render_n(&mut pb, 480);
+        assert!(plain.iter().all(|&v| (v - 0.3).abs() < 1e-5));
+        let mut mic = with_voice(&shared, 0.4);
+        let mixed = mic.render(&mut pb, 9600);
+        assert!(mixed.iter().all(|v| v.abs() <= 1.0 && v.is_finite()));
+        let tail = &mixed[2 * 4800..];
+        let mean = tail.iter().sum::<f32>() / tail.len() as f32;
+        assert!((mean - 0.3).abs() < 0.02, "a música deslocou: {mean}");
+        assert!(rms_of(tail) > 0.3 + 0.05);
+        // Voz muito alta + música alta: o limitador segura.
+        shared.voice.volume.store(1.5);
+        shared.set_mix(Mix {
+            master: 1.0,
+            vocal: 1.0,
+            instrumental: 1.5,
+        });
+        let loud = mic.render(&mut pb, 4800);
+        assert!(loud.iter().all(|v| v.abs() <= 1.0));
+    }
+
+    #[test]
+    fn removing_the_voice_goes_quiet_and_music_path_is_unchanged() {
+        let (shared, mut pb) = setup(None, stereo(96_000, |_| (0.2, -0.2)));
+        shared.playing.store(true, Ordering::Release);
+        let mut mic = with_voice(&shared, 0.4);
+        mic.render(&mut pb, 4800);
+        shared.install_voice(None);
+        render_n(&mut pb, 480);
+        let out = render_n(&mut pb, 480);
+        assert!(out
+            .chunks(2)
+            .all(|f| (f[0] - 0.2).abs() < 1e-5 && (f[1] + 0.2).abs() < 1e-5));
     }
 }

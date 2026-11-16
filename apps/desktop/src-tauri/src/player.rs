@@ -3,10 +3,10 @@
 
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
-use audio_engine::{DeviceList, Engine, Event, Loaded, Mix, OutputInfo};
+use audio_engine::{DeviceList, Engine, Event, Loaded, MicInfo, Mix, OutputInfo, VoiceSettings};
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, State};
 
@@ -57,6 +57,10 @@ pub struct Player {
     current: Mutex<Option<LoadRequest>>,
     /// Número do último pedido de carregamento; pedidos antigos que terminam depois são descartados.
     load_id: AtomicU64,
+    /// Últimos ajustes de voz pedidos pela interface (reaplicados ao reabrir o microfone).
+    voice: Mutex<Option<VoiceSettings>>,
+    /// O teste de microfone das configurações está aberto.
+    mic_testing: AtomicBool,
 }
 
 fn read_settings(path: &Path) -> AudioSettings {
@@ -80,6 +84,8 @@ impl Player {
             settings_path,
             current: Mutex::new(None),
             load_id: AtomicU64::new(0),
+            voice: Mutex::new(None),
+            mic_testing: AtomicBool::new(false),
         });
         // Aplica a saída salva sem travar a abertura da janela.
         if settings.output_device.is_some() {
@@ -144,6 +150,35 @@ impl Player {
         Ok(info)
     }
 
+    fn monitoring(&self) -> bool {
+        self.voice
+            .lock()
+            .unwrap()
+            .as_ref()
+            .map_or(false, |v| v.monitor)
+    }
+
+    /// Abre ou fecha o microfone conforme o que a interface precisa (cantar ou testar)
+    /// e aplica os ajustes de voz. O microfone só fica aberto enquanto é usado.
+    fn apply_voice(&self, voice: Option<VoiceSettings>) -> Result<Option<MicInfo>, String> {
+        if let Some(v) = voice {
+            *self.voice.lock().unwrap() = Some(v);
+        }
+        let current = self.voice.lock().unwrap().clone();
+        let want_mic = self.monitoring() || self.mic_testing.load(Ordering::SeqCst);
+        let info = if want_mic {
+            let name = self.settings.lock().unwrap().input_device.clone();
+            Some(self.engine.start_mic(name)?)
+        } else {
+            self.engine.stop_mic();
+            None
+        };
+        if let Some(v) = current {
+            self.engine.set_voice(v);
+        }
+        Ok(info)
+    }
+
     fn set_output(&self, name: Option<String>) -> Result<OutputInfo, String> {
         let (position, was_playing) = self.engine.position();
         let info = self.engine.set_output(name.clone())?;
@@ -195,9 +230,18 @@ pub async fn player_set_output(
 }
 
 #[tauri::command]
-pub fn player_set_input(state: State<'_, Arc<Player>>, name: Option<String>) {
-    state.settings.lock().unwrap().input_device = name;
-    state.save_settings();
+pub async fn player_set_input(state: State<'_, Arc<Player>>, name: Option<String>) -> Blocking<()> {
+    let p = state.inner().clone();
+    blocking(move || {
+        p.settings.lock().unwrap().input_device = name;
+        p.save_settings();
+        // Com o microfone aberto, troca para o novo dispositivo na hora.
+        if p.monitoring() || p.mic_testing.load(Ordering::SeqCst) {
+            p.apply_voice(None)?;
+        }
+        Ok(())
+    })
+    .await
 }
 
 #[tauri::command]
@@ -241,13 +285,20 @@ pub async fn player_mic_test(
 ) -> Blocking<Option<String>> {
     let p = state.inner().clone();
     blocking(move || {
-        if enable {
-            let name = p.settings.lock().unwrap().input_device.clone();
-            p.engine.start_mic_test(name).map(Some)
-        } else {
-            p.engine.stop_mic_test();
-            Ok(None)
-        }
+        p.mic_testing.store(enable, Ordering::SeqCst);
+        let info = p.apply_voice(None)?;
+        Ok(info.map(|i| i.name))
     })
     .await
+}
+
+/// Ajustes da voz ao vivo. Com `monitor` ligado abre o microfone e a voz sai junto com a música;
+/// desligado, fecha o microfone (a menos que o teste das configurações esteja aberto).
+#[tauri::command]
+pub async fn player_voice(
+    state: State<'_, Arc<Player>>,
+    settings: VoiceSettings,
+) -> Blocking<Option<MicInfo>> {
+    let p = state.inner().clone();
+    blocking(move || p.apply_voice(Some(settings))).await
 }

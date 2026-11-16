@@ -67,10 +67,11 @@ export function isActive(job: Pick<Job, "status">): boolean {
   return job.status === "queued" || job.status === "running";
 }
 
-/** O job mais recente de cada música (a lista vem com os mais novos primeiro). */
+/** O job de separação mais recente de cada música (a lista vem com os mais novos primeiro). */
 export function latestJobBySong(jobs: Job[]): Record<number, Job> {
   const result: Record<number, Job> = {};
   for (const job of jobs) {
+    if (job.kind !== "separate") continue; // análises aparecem só na lista de tarefas
     const current = result[job.song_id];
     if (!current || job.id > current.id) result[job.song_id] = job;
   }
@@ -99,4 +100,27 @@ export function apiMessage(error: unknown, fallback: string): string {
     if (typeof message === "string") return message;
   }
   return fallback;
+}
+
+export const KIND_LABELS: Record<string, string> = {
+  separate: "Separação de voz",
+  analyze: "Análise de tom e BPM",
+};
+
+/** Linha de estado de uma tarefa para a lista de tarefas. */
+export function describeTask(job: Job): string {
+  switch (job.status) {
+    case "queued":
+      return "Na fila";
+    case "running": {
+      const stage = job.stage ? (STAGE_LABELS[job.stage] ?? job.stage) : "Processando";
+      return `${stage} · ${Math.round(job.progress * 100)}%`;
+    }
+    case "done":
+      return "Concluída";
+    case "cancelled":
+      return "Cancelada";
+    default:
+      return `Falhou: ${job.error ?? "erro desconhecido"}`;
+  }
 }

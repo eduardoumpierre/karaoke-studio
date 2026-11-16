@@ -6,7 +6,14 @@ from app.db import migrate
 def test_migrations_apply_once_and_create_tables(tmp_path):
     db = tmp_path / "x.db"
     first = migrate(db)
-    assert first == ["0001_init.sql", "0002_jobs_stage.sql", "0003_lyrics.sql"]
+    assert first == [
+        "0001_init.sql",
+        "0002_jobs_stage.sql",
+        "0003_lyrics.sql",
+        "0004_analysis.sql",
+        "0005_pitch.sql",
+        "0006_job_force.sql",
+    ]
     assert migrate(db) == []
     conn = sqlite3.connect(db)
     names = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { clampOffset, currentLineIndex, formatOffset, lineLabel } from "./logic";
+import { clampOffset, currentLineIndex, formatOffset, lineLabel, lineStartSeconds } from "./logic";
 
 const lines = [
   { time_ms: 1000, text: "a" },
@@ -40,5 +40,26 @@ describe("formatação", () => {
   it("linha vazia vira nota musical", () => {
     expect(lineLabel("  ")).toBe("♪");
     expect(lineLabel("oi")).toBe("oi");
+  });
+});
+
+describe("clique na letra", () => {
+  it("vai um pouco antes do verso e respeita o ajuste de tempo", () => {
+    expect(lineStartSeconds(10_000, 0)).toBeCloseTo(9.7);
+    expect(lineStartSeconds(10_000, 500)).toBeCloseTo(10.2); // letra atrasada: o verso soa depois
+    expect(lineStartSeconds(100, 0)).toBe(0); // não passa do início
+  });
+});
+
+describe("clique na letra", () => {
+  it("o verso clicado já vira a linha atual ao pular para a entrada", async () => {
+    const { currentLineIndex, lineStartSeconds, LINE_LEAD_IN_S } = await import("./logic");
+    const lines = [
+      { time_ms: 1000, text: "a" },
+      { time_ms: 5000, text: "b" },
+    ];
+    const target = lineStartSeconds(5000, 0);
+    expect(currentLineIndex(lines, target, 0)).toBe(0); // sem antecipação, destaca a anterior
+    expect(currentLineIndex(lines, target, 0, LINE_LEAD_IN_S)).toBe(1);
   });
 });

@@ -6,12 +6,21 @@ export interface Line {
 export const OFFSET_STEP_MS = 100;
 export const OFFSET_LIMIT_MS = 30_000;
 
+/** Quanto antes do verso o clique na letra começa, para dar tempo de respirar e entrar cantando. */
+export const LINE_LEAD_IN_S = 0.3;
+
 /**
  * Índice da linha atual: a última cuja hora (já deslocada pelo ajuste) é ≤ posição.
  * Offset positivo atrasa a letra. Retorna -1 antes da primeira linha.
+ * `lookaheadS` antecipa a troca de linha (usado para casar com a entrada do clique na letra).
  */
-export function currentLineIndex(lines: Line[], positionSeconds: number, offsetMs: number): number {
-  const at = positionSeconds * 1000 - offsetMs;
+export function currentLineIndex(
+  lines: Line[],
+  positionSeconds: number,
+  offsetMs: number,
+  lookaheadS = 0,
+): number {
+  const at = (positionSeconds + lookaheadS) * 1000 - offsetMs;
   let lo = 0;
   let hi = lines.length - 1;
   let found = -1;
@@ -25,6 +34,11 @@ export function currentLineIndex(lines: Line[], positionSeconds: number, offsetM
     }
   }
   return found;
+}
+
+/** Posição (s) na música onde o verso começa, já com o ajuste de tempo da letra. */
+export function lineStartSeconds(timeMs: number, offsetMs: number): number {
+  return Math.max(0, (timeMs + offsetMs) / 1000 - LINE_LEAD_IN_S);
 }
 
 export function clampOffset(ms: number): number {

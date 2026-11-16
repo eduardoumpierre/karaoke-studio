@@ -98,3 +98,35 @@ export function advance(state: QueueState): { state: QueueState; next: Song | nu
 export function clearQueue(state: QueueState): QueueState {
   return { ...state, queue: [] };
 }
+
+/** Posição do ponteiro na barra, de 0 a 1. */
+export function fractionFromPointer(clientX: number, left: number, width: number): number {
+  if (width <= 0) return 0;
+  return Math.max(0, Math.min(1, (clientX - left) / width));
+}
+
+export const SEEK_STEP_S = 5;
+export const SEEK_BIG_STEP_S = 15;
+
+/** Destino de uma tecla na barra de tempo (setas ±5 s, PageUp/Down ±15 s, Home/End), ou null. */
+export function keySeekTarget(key: string, position: number, duration: number): number | null {
+  const clamp = (t: number) => Math.max(0, Math.min(duration, t));
+  switch (key) {
+    case "ArrowRight":
+    case "ArrowUp":
+      return clamp(position + SEEK_STEP_S);
+    case "ArrowLeft":
+    case "ArrowDown":
+      return clamp(position - SEEK_STEP_S);
+    case "PageUp":
+      return clamp(position + SEEK_BIG_STEP_S);
+    case "PageDown":
+      return clamp(position - SEEK_BIG_STEP_S);
+    case "Home":
+      return 0;
+    case "End":
+      return Math.max(0, duration - 0.5);
+    default:
+      return null;
+  }
+}

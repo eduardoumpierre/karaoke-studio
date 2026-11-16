@@ -8,9 +8,10 @@ use std::time::Duration;
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{FromSample, Sample, SampleFormat, SizedSample, Stream};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::playback::{Loaded, Mix, Playback, Shared};
+use crate::voice::{Ring, VoiceOut};
 
 /// Intervalo dos eventos de estado para a interface (~30 Hz).
 const TICK: Duration = Duration::from_millis(33);
@@ -37,6 +38,74 @@ pub struct OutputInfo {
     pub channels: u16,
 }
 
+#[derive(Clone, Debug, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct MicInfo {
+    pub name: String,
+    pub sample_rate: u32,
+    pub channels: u16,
+}
+
+/// Ajustes da voz ao vivo (vindos da interface).
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct VoiceSettings {
+    /// Ouvir a voz na saída.
+    pub monitor: bool,
+    /// Volume do retorno, ganho linear (0 a 1,5).
+    pub volume: f32,
+    /// Ganho de entrada, linear.
+    pub input_gain: f32,
+    pub gate_on: bool,
+    /// Limiar do portão, amplitude linear.
+    pub gate_threshold: f32,
+    /// Efeitos (todos opcionais: sem eles a voz passa limpa).
+    #[serde(default)]
+    pub eq_low_db: f32,
+    #[serde(default)]
+    pub eq_mid_db: f32,
+    #[serde(default)]
+    pub eq_high_db: f32,
+    /// Compressão, 0 a 1.
+    #[serde(default)]
+    pub comp: f32,
+    /// Reverb e tamanho da sala, 0 a 1.
+    #[serde(default)]
+    pub reverb: f32,
+    #[serde(default = "default_reverb_size")]
+    pub reverb_size: f32,
+    /// Eco (volume 0 a 1) e tempo entre repetições (ms).
+    #[serde(default)]
+    pub echo: f32,
+    #[serde(default = "default_echo_ms")]
+    pub echo_ms: f32,
+    /// Autotune: ligado, intensidade (0 a 1), velocidade (0 a 1) e notas permitidas (12 bits).
+    #[serde(default)]
+    pub tune_on: bool,
+    #[serde(default)]
+    pub tune_amount: f32,
+    #[serde(default = "default_tune_speed")]
+    pub tune_speed: f32,
+    #[serde(default = "default_tune_scale")]
+    pub tune_scale: u32,
+}
+
+fn default_tune_speed() -> f32 {
+    0.35
+}
+
+fn default_tune_scale() -> u32 {
+    crate::tune::CHROMATIC
+}
+
+fn default_reverb_size() -> f32 {
+    0.5
+}
+
+fn default_echo_ms() -> f32 {
+    300.0
+}
+
 /// Eventos enviados à interface.
 #[derive(Clone, Debug, Serialize, PartialEq)]
 #[serde(tag = "type", rename_all = "camelCase")]
@@ -57,6 +126,16 @@ pub enum Event {
     MicLevel {
         peak: f32,
     },
+    /// Medidas da ponte microfone → saída (~2 vezes por segundo, com o microfone aberto).
+    #[serde(rename_all = "camelCase")]
+    Voice {
+        /// Estoque da ponte em ms: é o atraso que o app acrescenta (fora o do dispositivo).
+        bridge_ms: f32,
+        target_ms: f32,
+        underruns: u64,
+        /// Atraso extra do autotune em ms (0 com o autotune desligado).
+        tune_ms: f32,
+    },
 }
 
 type Reply<T> = Sender<Result<T, String>>;
@@ -76,8 +155,9 @@ enum Cmd {
     Seek(f64),
     SetMix(Mix),
     Position(Sender<(f64, bool)>),
-    StartMic(Option<String>, Reply<String>),
+    StartMic(Option<String>, Reply<MicInfo>),
     StopMic,
+    SetVoice(VoiceSettings),
     StreamError(String),
     Shutdown,
 }
@@ -155,17 +235,30 @@ impl Engine {
         self.ask(Cmd::Position).unwrap_or((0.0, false))
     }
 
-    /// Abre o microfone só para medir o nível (sem tocar nada). Devolve o nome do dispositivo.
-    pub fn start_mic_test(&self, name: Option<String>) -> Result<String, String> {
+    /// Abre o microfone (mede o nível; o som só sai na saída com o retorno ligado em `set_voice`).
+    /// Se já estiver aberto o mesmo dispositivo, devolve os dados dele.
+    pub fn start_mic(&self, name: Option<String>) -> Result<MicInfo, String> {
         self.ask(|r| Cmd::StartMic(name, r))?
     }
-    pub fn stop_mic_test(&self) {
+    pub fn stop_mic(&self) {
         let _ = self.tx.send(Cmd::StopMic);
+    }
+    pub fn set_voice(&self, settings: VoiceSettings) {
+        let _ = self.tx.send(Cmd::SetVoice(settings));
     }
 
     pub fn shutdown(&self) {
         let _ = self.tx.send(Cmd::Shutdown);
     }
+}
+
+/// Microfone aberto: o `Stream` escreve na `Ring`, e a saída lê dela.
+struct Mic {
+    _stream: Stream,
+    peak: Arc<AtomicU32>,
+    ring: Arc<Ring>,
+    info: MicInfo,
+    wanted: Option<String>,
 }
 
 struct EngineThread {
@@ -177,7 +270,10 @@ struct EngineThread {
     loaded: Option<Arc<Loaded>>,
     /// Músicas já trocadas; a memória é liberada aqui, nunca no callback de áudio.
     retired: Vec<Arc<Loaded>>,
-    mic: Option<(Stream, Arc<AtomicU32>)>,
+    mic: Option<Mic>,
+    /// Filas de microfones já fechados; a memória é liberada aqui, nunca no callback.
+    retired_rings: Vec<Arc<Ring>>,
+    ticks: u32,
     last_state: Option<Event>,
 }
 
@@ -191,6 +287,8 @@ impl EngineThread {
             loaded: None,
             retired: Vec::new(),
             mic: None,
+            retired_rings: Vec::new(),
+            ticks: 0,
             last_state: None,
         }
     }
@@ -252,7 +350,8 @@ impl EngineThread {
             Cmd::StartMic(name, r) => {
                 let _ = r.send(self.start_mic(name));
             }
-            Cmd::StopMic => self.mic = None,
+            Cmd::StopMic => self.stop_mic(),
+            Cmd::SetVoice(v) => self.set_voice(v),
             Cmd::StreamError(message) => {
                 log::error!("erro no dispositivo de áudio: {message}");
                 self.shared.playing.store(false, Ordering::Release);
@@ -275,9 +374,20 @@ impl EngineThread {
         if self.shared.ended.swap(false, Ordering::AcqRel) {
             self.emit(Event::Ended);
         }
-        if let Some((_, peak)) = &self.mic {
-            let p = f32::from_bits(peak.swap(0, Ordering::Relaxed));
+        self.retired_rings.retain(|r| Arc::strong_count(r) > 1);
+        self.ticks = self.ticks.wrapping_add(1);
+        if let Some(mic) = &self.mic {
+            let p = f32::from_bits(mic.peak.swap(0, Ordering::Relaxed));
             self.emit(Event::MicLevel { peak: p });
+            if self.ticks % 15 == 0 {
+                let v = &self.shared.voice;
+                self.emit(Event::Voice {
+                    bridge_ms: v.fill_ms.load(),
+                    target_ms: v.target_ms.load(),
+                    underruns: v.underruns.load(Ordering::Relaxed),
+                    tune_ms: v.tune.latency_ms.load(),
+                });
+            }
         }
         let (position, playing) = self.position();
         let (peak_l, peak_r) = self.shared.take_peaks();
@@ -370,6 +480,15 @@ impl EngineThread {
         self.shared.position.store(0, Ordering::Relaxed);
         self.shared.seek_to.store(-1, Ordering::Release);
         let playback = Playback::new(self.shared.clone(), info.sample_rate);
+        // A voz ao vivo precisa da taxa da nova saída: refaz o lado da saída da ponte.
+        if let Some(mic) = &self.mic {
+            self.shared.install_voice(Some(VoiceOut::new(
+                mic.ring.clone(),
+                self.shared.voice.clone(),
+                mic.info.sample_rate,
+                info.sample_rate,
+            )));
+        }
         let stream = match config.sample_format() {
             SampleFormat::F32 => {
                 build_output::<f32>(&device, &config.into(), playback, self.tx.clone())
@@ -398,8 +517,54 @@ impl EngineThread {
         Ok(info)
     }
 
-    fn start_mic(&mut self, name: Option<String>) -> Result<String, String> {
-        self.mic = None;
+    fn stop_mic(&mut self) {
+        if let Some(mic) = self.mic.take() {
+            self.shared.install_voice(None);
+            self.shared.voice.monitor.store(false, Ordering::Relaxed);
+            self.retired_rings.push(mic.ring.clone());
+        }
+    }
+
+    fn set_voice(&mut self, v: VoiceSettings) {
+        let shared = &self.shared.voice;
+        shared.volume.store(v.volume.clamp(0.0, 1.5));
+        shared.input_gain.store(v.input_gain.clamp(0.0, 16.0));
+        shared.gate_on.store(v.gate_on, Ordering::Relaxed);
+        shared
+            .gate_threshold
+            .store(v.gate_threshold.clamp(0.0, 0.5));
+        let fx = &shared.fx;
+        fx.eq_low_db.store(v.eq_low_db.clamp(-12.0, 12.0));
+        fx.eq_mid_db.store(v.eq_mid_db.clamp(-12.0, 12.0));
+        fx.eq_high_db.store(v.eq_high_db.clamp(-12.0, 12.0));
+        fx.comp.store(v.comp.clamp(0.0, 1.0));
+        fx.reverb.store(v.reverb.clamp(0.0, 1.0));
+        fx.reverb_size.store(v.reverb_size.clamp(0.0, 1.0));
+        fx.echo.store(v.echo.clamp(0.0, 1.0));
+        fx.echo_ms.store(v.echo_ms.clamp(60.0, 800.0));
+        let tune = &shared.tune;
+        tune.on.store(v.tune_on, Ordering::Relaxed);
+        tune.amount.store(v.tune_amount.clamp(0.0, 1.0));
+        tune.speed.store(v.tune_speed.clamp(0.0, 1.0));
+        tune.scale_mask
+            .store(v.tune_scale & crate::tune::CHROMATIC, Ordering::Relaxed);
+        // O retorno só liga com o microfone aberto.
+        let on = v.monitor && self.mic.is_some();
+        shared.monitor.store(on, Ordering::Relaxed);
+    }
+
+    fn start_mic(&mut self, name: Option<String>) -> Result<MicInfo, String> {
+        if let Some(mic) = &self.mic {
+            if mic.wanted == name {
+                return Ok(mic.info.clone());
+            }
+        }
+        self.stop_mic();
+        let out_rate = self
+            .output
+            .as_ref()
+            .map(|(_, i)| i.sample_rate)
+            .ok_or("nenhum dispositivo de saída disponível")?;
         let host = cpal::default_host();
         let device = match &name {
             Some(n) => host
@@ -412,40 +577,49 @@ impl EngineThread {
                 .ok_or("nenhum microfone padrão")?,
         };
         let config = device.default_input_config().map_err(|e| e.to_string())?;
+        let info = MicInfo {
+            name: device.name().unwrap_or_else(|_| "(sem nome)".into()),
+            sample_rate: config.sample_rate().0,
+            channels: config.channels(),
+        };
         let peak = Arc::new(AtomicU32::new(0));
+        let ring = Ring::new();
+        let channels = config.channels() as usize;
+        let sink = MicSink {
+            ring: ring.clone(),
+            peak: peak.clone(),
+            channels,
+        };
         let stream = match config.sample_format() {
-            SampleFormat::F32 => build_input::<f32>(
-                &device,
-                &config.clone().into(),
-                peak.clone(),
-                self.tx.clone(),
-            ),
-            SampleFormat::I16 => build_input::<i16>(
-                &device,
-                &config.clone().into(),
-                peak.clone(),
-                self.tx.clone(),
-            ),
-            SampleFormat::U16 => build_input::<u16>(
-                &device,
-                &config.clone().into(),
-                peak.clone(),
-                self.tx.clone(),
-            ),
-            SampleFormat::I32 => build_input::<i32>(
-                &device,
-                &config.clone().into(),
-                peak.clone(),
-                self.tx.clone(),
-            ),
+            SampleFormat::F32 => build_input::<f32>(&device, &config.into(), sink, self.tx.clone()),
+            SampleFormat::I16 => build_input::<i16>(&device, &config.into(), sink, self.tx.clone()),
+            SampleFormat::U16 => build_input::<u16>(&device, &config.into(), sink, self.tx.clone()),
+            SampleFormat::I32 => build_input::<i32>(&device, &config.into(), sink, self.tx.clone()),
             other => Err(format!("formato de amostra não suportado: {other:?}")),
         }?;
         stream
             .play()
             .map_err(|e| format!("não foi possível abrir o microfone: {e}"))?;
-        let used = device.name().unwrap_or_else(|_| "(sem nome)".into());
-        self.mic = Some((stream, peak));
-        Ok(used)
+        self.shared.install_voice(Some(VoiceOut::new(
+            ring.clone(),
+            self.shared.voice.clone(),
+            info.sample_rate,
+            out_rate,
+        )));
+        log::info!(
+            "microfone: {} ({} Hz, {} canais)",
+            info.name,
+            info.sample_rate,
+            info.channels
+        );
+        self.mic = Some(Mic {
+            _stream: stream,
+            peak,
+            ring,
+            info: info.clone(),
+            wanted: name,
+        });
+        Ok(info)
     }
 }
 
@@ -471,10 +645,40 @@ where
         .map_err(|e| format!("não foi possível abrir a saída: {e}"))
 }
 
+/// O que o callback do microfone faz com cada bloco: mistura para mono, mede o pico e escreve na ponte.
+struct MicSink {
+    ring: Arc<Ring>,
+    peak: Arc<AtomicU32>,
+    channels: usize,
+}
+
+impl MicSink {
+    fn push<T>(&self, data: &[T])
+    where
+        T: SizedSample,
+        f32: FromSample<T>,
+    {
+        let ch = self.channels.max(1);
+        let frames = data.len() / ch;
+        let mut p = 0.0f32;
+        self.ring.write(frames, |i| {
+            let frame = &data[i * ch..(i + 1) * ch];
+            let mut sum = 0.0f32;
+            for &s in frame {
+                sum += f32::from_sample(s);
+            }
+            let mono = sum / ch as f32;
+            p = p.max(mono.abs());
+            mono
+        });
+        self.peak.fetch_max(p.to_bits(), Ordering::Relaxed);
+    }
+}
+
 fn build_input<T>(
     device: &cpal::Device,
     config: &cpal::StreamConfig,
-    peak: Arc<AtomicU32>,
+    sink: MicSink,
     errors: Sender<Cmd>,
 ) -> Result<Stream, String>
 where
@@ -484,13 +688,7 @@ where
     device
         .build_input_stream(
             config,
-            move |data: &[T], _| {
-                let mut p = 0.0f32;
-                for &s in data {
-                    p = p.max(f32::from_sample(s).abs());
-                }
-                peak.fetch_max(p.to_bits(), Ordering::Relaxed);
-            },
+            move |data: &[T], _| sink.push(data),
             move |e| {
                 let _ = errors.send(Cmd::StreamError(e.to_string()));
             },

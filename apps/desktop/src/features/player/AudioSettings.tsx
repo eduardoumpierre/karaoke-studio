@@ -1,16 +1,9 @@
 import { useCallback, useEffect, useState } from "react";
 
 import type { DevicesReply, PlayerService } from "../../services/player";
+import { Meter } from "./controls";
 
 const DEFAULT_VALUE = "";
-
-function Meter({ peak }: { peak: number }) {
-  return (
-    <div className="meter" role="meter" aria-valuemin={0} aria-valuemax={1} aria-valuenow={peak}>
-      <div className="meter-fill" style={{ width: `${Math.min(1, peak) * 100}%` }} />
-    </div>
-  );
-}
 
 export function AudioSettings({
   service,

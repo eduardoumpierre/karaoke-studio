@@ -1,7 +1,15 @@
 import { useEffect, useRef, useState } from "react";
 
-import type { PlayerState } from "../player/usePlayer";
-import { clampOffset, currentLineIndex, formatOffset, lineLabel, OFFSET_STEP_MS } from "./logic";
+import { usePositionSelector, type PlayerState } from "../player/usePlayer";
+import {
+  clampOffset,
+  currentLineIndex,
+  formatOffset,
+  LINE_LEAD_IN_S,
+  lineLabel,
+  lineStartSeconds,
+  OFFSET_STEP_MS,
+} from "./logic";
 import type { LyricsState } from "./useLyrics";
 
 export function LyricsView({ player, state }: { player: PlayerState; state: LyricsState }) {
@@ -15,8 +23,11 @@ export function LyricsView({ player, state }: { player: PlayerState; state: Lyri
 
   const offset = lyrics?.offset_ms ?? 0;
   const lines = lyrics?.lines ?? [];
-  const current =
-    lyrics?.synced && lines.length > 0 ? currentLineIndex(lines, player.position, offset) : -1;
+  const synced = Boolean(lyrics?.synced) && lines.length > 0;
+  // Só redesenha quando a linha muda, não a cada aviso de posição.
+  const current = usePositionSelector(player, (pos) =>
+    synced ? currentLineIndex(lines, pos, offset, LINE_LEAD_IN_S) : -1,
+  );
 
   useEffect(() => {
     activeRef.current?.scrollIntoView({ block: "center", behavior: "smooth" });
@@ -79,7 +90,14 @@ export function LyricsView({ player, state }: { player: PlayerState; state: Lyri
                 className={i === current ? "on" : i < current ? "past" : ""}
                 aria-current={i === current ? "true" : undefined}
               >
-                {lineLabel(ln.text)}
+                <button
+                  type="button"
+                  className="lyric-seek"
+                  title="Ir para este trecho"
+                  onClick={() => player.seek(lineStartSeconds(ln.time_ms, offset))}
+                >
+                  {lineLabel(ln.text)}
+                </button>
               </li>
             ))}
           </ol>

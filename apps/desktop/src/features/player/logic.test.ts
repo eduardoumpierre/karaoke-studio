@@ -9,7 +9,9 @@ import {
   EMPTY_QUEUE,
   enqueue,
   formatTime,
+  fractionFromPointer,
   HISTORY_LIMIT,
+  keySeekTarget,
   percentToGain,
   playNow,
   PRESETS,
@@ -95,5 +97,25 @@ describe("fila e histórico", () => {
     for (let i = 1; i <= HISTORY_LIMIT + 20; i++) s = playNow(s, song(i));
     expect(s.history).toHaveLength(HISTORY_LIMIT);
     expect(s.history[0]?.id).toBe(HISTORY_LIMIT + 19);
+  });
+});
+
+describe("barra de tempo", () => {
+  it("converte a posição do ponteiro em fração limitada a 0–1", () => {
+    expect(fractionFromPointer(150, 100, 200)).toBe(0.25);
+    expect(fractionFromPointer(50, 100, 200)).toBe(0); // antes do início
+    expect(fractionFromPointer(999, 100, 200)).toBe(1); // depois do fim
+    expect(fractionFromPointer(10, 0, 0)).toBe(0); // largura zero
+  });
+
+  it("teclas: setas ±5 s, PageUp/Down ±15 s, Home e End, sempre dentro da música", () => {
+    expect(keySeekTarget("ArrowRight", 60, 200)).toBe(65);
+    expect(keySeekTarget("ArrowLeft", 60, 200)).toBe(55);
+    expect(keySeekTarget("PageUp", 60, 200)).toBe(75);
+    expect(keySeekTarget("PageDown", 10, 200)).toBe(0);
+    expect(keySeekTarget("ArrowRight", 198, 200)).toBe(200);
+    expect(keySeekTarget("Home", 90, 200)).toBe(0);
+    expect(keySeekTarget("End", 90, 200)).toBe(199.5);
+    expect(keySeekTarget("a", 90, 200)).toBeNull();
   });
 });

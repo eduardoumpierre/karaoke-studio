@@ -177,19 +177,19 @@ Notas: as músicas ficam na memória decodificadas (≈ 45 MB por minuto por fai
 - [x] Parser LRC; exibição da linha atual, próximas linhas, rolagem suave.
 - [x] Ajuste manual de offset (± ms) salvo por música.
 - [x] Alternativa para letra sem timestamp (exibição estática) e letra colada manualmente.
-- [ ] BPM e tonalidade com Librosa, marcados como sugestão editável.
-- [ ] Transposição conforme a decisão da Fase 0 (tempo real no motor ou pré-render).
-- [ ] Seletor de tonalidade na tela principal.
+- [x] BPM e tonalidade com Librosa, marcados como sugestão editável (aba "Tom e BPM"; botões ÷2/×2 para erro de oitava; edições manuais preservadas).
+- [x] Transposição por pré-render (ADR 0001, `docs/decisions/`): ±6 semitons, cache em disco, escolha salva por música.
+- [x] Seletor de tonalidade na tela principal (controle ♭/♯ no player; mostra o tom resultante).
 
 **Entrega:** karaokê com letra sincronizada e transposição.
 
 ### Fase 6 — Microfone e efeitos (Sprint 6)
 
-- [ ] Captura de entrada, seleção de dispositivo, monitoramento com controle de volume.
-- [ ] Cadeia de efeitos no motor: noise gate → EQ → compressor → autotune → reverb/delay.
-- [ ] Autotune: tom automático/manual, escala, intensidade, velocidade de correção.
+- [x] Captura de entrada, seleção de dispositivo, monitoramento com controle de volume (6a: botão "Cantar", ponte microfone → saída com compensação de deriva entre relógios, ganho, passa-altas de 80 Hz e portão de ruído; medidor e atraso do app na tela). *Validação em hardware real pendente.*
+- [x] Cadeia de efeitos no motor (6b): passa-altas → noise gate → EQ de 3 bandas (graves 120 Hz, presença 3 kHz, brilho 9 kHz) → compressor (um botão: limiar, taxa e compensação juntos) → eco com filtro no retorno → reverb estilo Freeverb com pré-atraso e saída estéreo. O autotune entra entre o compressor e o eco na 6c. Tudo no callback sem alocar memória; com os efeitos em zero a voz passa intacta (teste bit a bit). *Validação de som em hardware real pendente.*
+- [x] Autotune (6c): detector de altura YIN (a ~12 kHz, a cada ~5 ms) → nota-alvo mais próxima da escala (tom da música já transposto, todas as notas ou tom escolhido; com histerese) → correção suave (intensidade e velocidade) por deslocador de altura de dois pontos. A altura é suavizada (~100 ms), então o vibrato passa; trocas de nota >1,5 semitom são seguidas na hora. Fica entre o portão e o EQ. Desligado = voz idêntica e sem atraso; ligado soma ~12 ms. Custo medido: ~0,6% de um núcleo. Estilos: Sutil, Natural, Firme, Efeito. *Validação de som em hardware real pendente.*
 - [ ] Configurações: sample rate, tamanho do buffer, exibição da latência estimada.
-- [ ] Presets de voz salvos.
+- [x] Presets de voz (6b): Seca, Natural (padrão), Estúdio, Palco, Eco e Catedral; qualquer ajuste manual vira "Personalizado". Os ajustes ficam salvos entre sessões (por enquanto sem presets do usuário com nome próprio).
 - [ ] Testes de carga: sem dropouts durante separação em segundo plano.
 
 **Entrega:** experiência completa de karaokê com voz processada.
@@ -439,4 +439,8 @@ Conclusões:
 
 ## 10. Próximo passo
 
-**Fase 5a (letras) em validação:** abrir a aba "Letra" com uma música tocando (precisa de internet na primeira busca). Depois seguem a Fase 5b (BPM e tom com Librosa) e 5c (transposição, que exige decisão técnica: tempo real no motor ou pré-render).
+**Fase 6a (voz ao vivo) em validação:** configuração atual do usuário = microfone do headset + música e voz nas caixas EDIFIER (USB). Medido na Fase 0: o caminho pelas caixas soma cerca de 60 a 100 ms de atraso (a voz volta atrasada, como um eco leve) e a música das caixas pode voltar pelo microfone. O app começa com cpal (modo compartilhado). Próximos passos da Fase 6:
+
+- **6b (entregue, falta ouvir em hardware real):** EQ, compressor, reverb/eco e presets de voz. Vale ouvir principalmente: o reverb com o atraso das caixas, o eco no preset "Eco" e se a compressão forte aumenta a microfonia.
+- **6c (entregue, falta ouvir em hardware real):** autotune natural e ajustável. Vale ouvir: o estilo "Natural" com sua voz, se a troca de nota fica suave e se o atraso extra de ~12 ms incomoda junto com o das caixas.
+- **6d:** WASAPI exclusivo (reduz o atraso da saída), calibração de latência por chirp, cancelamento do retorno da música no microfone (se o eco incomodar) e teste de carga durante a separação.
