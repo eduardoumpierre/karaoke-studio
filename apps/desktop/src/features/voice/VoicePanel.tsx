@@ -150,47 +150,56 @@ function TuneSection({ voice }: { voice: VoiceState }) {
           onChange={(v) => voice.update({ tuneSpeedPercent: v })}
           hint="Devagar mantém o jeito de cantar; rápido troca de nota na hora"
         />
-        <label className="vol">
-          <span>Notas</span>
-          <select
-            value={s.tuneScale}
-            onChange={(e) => voice.update({ tuneScale: e.target.value as typeof s.tuneScale })}
-            aria-label="Notas permitidas"
-          >
-            <option value="song">Tom da música</option>
-            <option value="chromatic">Todas as notas</option>
-            <option value="manual">Escolher o tom</option>
-          </select>
-          <output />
-        </label>
-        {s.tuneScale === "manual" && (
-          <label className="vol">
-            <span>Tom</span>
-            <span className="inline-selects">
-              <select
-                value={s.tuneTonic}
-                onChange={(e) => voice.update({ tuneTonic: Number(e.target.value) })}
-                aria-label="Tônica"
-              >
-                {NOTE_NAMES.map((n, i) => (
-                  <option key={n} value={i}>
-                    {n}
-                  </option>
-                ))}
-              </select>
-              <select
-                value={s.tuneMode}
-                onChange={(e) => voice.update({ tuneMode: e.target.value as Mode })}
-                aria-label="Modo"
-              >
-                <option value="major">maior</option>
-                <option value="minor">menor</option>
-              </select>
-            </span>
-            <output />
-          </label>
-        )}
       </div>
+      <div className="presets" role="group" aria-label="Notas permitidas">
+        {(
+          [
+            ["song", "Tom da música"],
+            ["chromatic", "Todas as notas"],
+            ["manual", "Escolher o tom"],
+          ] as const
+        ).map(([id, label]) => (
+          <button
+            key={id}
+            type="button"
+            className={s.tuneScale === id ? "chip active" : "chip"}
+            aria-pressed={s.tuneScale === id}
+            onClick={() => voice.update({ tuneScale: id })}
+          >
+            {label}
+          </button>
+        ))}
+      </div>
+      {s.tuneScale === "manual" && (
+        <>
+          <div className="presets wrap" role="group" aria-label="Tônica">
+            {NOTE_NAMES.map((n, i) => (
+              <button
+                key={n}
+                type="button"
+                className={s.tuneTonic === i ? "chip active" : "chip"}
+                aria-pressed={s.tuneTonic === i}
+                onClick={() => voice.update({ tuneTonic: i })}
+              >
+                {n}
+              </button>
+            ))}
+          </div>
+          <div className="presets" role="group" aria-label="Modo">
+            {(["major", "minor"] as Mode[]).map((m) => (
+              <button
+                key={m}
+                type="button"
+                className={s.tuneMode === m ? "chip active" : "chip"}
+                aria-pressed={s.tuneMode === m}
+                onClick={() => voice.update({ tuneMode: m })}
+              >
+                {m === "major" ? "maior" : "menor"}
+              </button>
+            ))}
+          </div>
+        </>
+      )}
       <p className="hint small">
         {scaleHint}{" "}
         {s.tuneOn
@@ -200,8 +209,9 @@ function TuneSection({ voice }: { voice: VoiceState }) {
           : "Desligado, não soma atraso nenhum."}
       </p>
       <p className="hint small">
-        O autotune acompanha o tom da música, mesmo transposta. Ele só corrige o “centro” de cada
-        nota e deixa o vibrato passar. Para o efeito “robô”, use Intensidade e Velocidade no máximo.
+        O autotune acompanha o tom da música, mesmo transposta. Em velocidades baixas ele só corrige o
+        “centro” de cada nota e deixa o vibrato passar; em velocidades altas também achata a
+        oscilação lenta. Para o efeito “robô”, use Intensidade e Velocidade no máximo.
         Funciona melhor com fones ou caixas longe do microfone.
       </p>
     </>

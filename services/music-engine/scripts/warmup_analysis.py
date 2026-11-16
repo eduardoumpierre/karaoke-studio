@@ -1,26 +1,20 @@
 """Compila o numba (usado pelo Librosa) uma vez, deixando a análise de tom e BPM rápida.
 
-Uso: uv run python scripts/warmup_analysis.py [PASTA_DE_DADOS]
-Sem argumento usa a pasta de dados padrão do app (a mesma do servidor).
+Uso: uv run python scripts/warmup_analysis.py [PASTA_DO_CACHE]
+Sem argumento usa o cache fixo do app (o mesmo que o servidor usa).
 """
 
 from __future__ import annotations
 
-import os
 import sys
 from pathlib import Path
 
 
 def main() -> None:
-    from app.config import default_data_dir
+    from app.config import numba_cache_dir
     from app.services.analyzer import LibrosaAnalyzer
 
-    data_dir = (
-        Path(sys.argv[1])
-        if len(sys.argv) > 1
-        else Path(os.environ.get("KARAOKE_DATA_DIR") or default_data_dir())
-    )
-    cache = data_dir / "numba-cache"
+    cache = Path(sys.argv[1]) if len(sys.argv) > 1 else numba_cache_dir()
     print(f"Cache do numba: {cache}\nCompilando (na primeira vez pode levar alguns minutos)...")
     analyzer = LibrosaAnalyzer(cache)
     try:

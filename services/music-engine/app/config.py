@@ -27,15 +27,20 @@ def default_data_dir() -> Path:
     return Path(base) / "KaraokeStudio"
 
 
+def numba_cache_dir() -> Path:
+    """Cache de compilação do numba: um lugar fixo, igual para o app e para os scripts.
+
+    Fica fora da pasta de dados do app de propósito: o app (Tauri) e os scripts de linha de
+    comando usam pastas de dados diferentes, e o aquecimento só vale se todos usarem este cache.
+    """
+    return default_data_dir() / "numba-cache"
+
+
 @dataclass(frozen=True)
 class Settings:
     token: str
     data_dir: Path
     warm_up: bool = False  # compila o numba em segundo plano ao iniciar (só no app real)
-
-    @property
-    def numba_cache_dir(self) -> Path:
-        return self.data_dir / "numba-cache"
 
     @property
     def log_dir(self) -> Path:

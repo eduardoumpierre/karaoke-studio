@@ -10,7 +10,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from . import __version__
 from .api import analysis, health, jobs, lyrics, pitch, songs
-from .config import ALLOWED_ORIGINS, TOKEN_HEADER, Settings
+from .config import ALLOWED_ORIGINS, TOKEN_HEADER, Settings, numba_cache_dir
 from .db import migrate
 from .security import require_token
 from .services.analyzer import Analyzer, LibrosaAnalyzer
@@ -30,7 +30,7 @@ def create_app(
     lrclib: LrclibClient | None = None,
     analyzer: Analyzer | None = None,
 ) -> FastAPI:
-    analyzer = analyzer or LibrosaAnalyzer(settings.numba_cache_dir if settings.warm_up else None)
+    analyzer = analyzer or LibrosaAnalyzer(numba_cache_dir() if settings.warm_up else None)
     runner = JobRunner(settings, separator or DemucsSeparator(settings.data_dir), analyzer)
 
     @asynccontextmanager

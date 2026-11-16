@@ -258,3 +258,42 @@ def test_stage_progress_is_monotonic_and_bounded():
         c, _ = stage_progress(i, 500.0)
         assert la == label and a == start
         assert start <= a < b < c < end
+
+
+# ----------------------------------------------------------------------------- processo de análise
+def test_worker_failure_reports_the_error_and_cancel_kills_it(tmp_path):
+    import threading
+    import time
+
+    from app.services.analyzer import WorkerFailed
+    from app.services.audio_tools import Cancelled
+
+    analyzer = LibrosaAnalyzer(tmp_path / "numba")
+    try:
+        with pytest.raises(WorkerFailed, match="sem resultado"):
+            analyzer._run([str(tmp_path / "nao-existe.wav")], threading.Event())
+        cancel = threading.Event()
+        threading.Timer(0.3, cancel.set).start()
+        started = time.monotonic()
+        with pytest.raises(Cancelled):
+            analyzer._run(["--warmup"], cancel)  # compila numba: dá tempo de cancelar
+        assert time.monotonic() - started < 10
+        assert not analyzer._procs
+    finally:
+        analyzer.close()
+
+
+def test_worker_streams_stages_and_result(tmp_path):
+    librosa = pytest.importorskip("librosa")
+    sf = pytest.importorskip("soundfile")
+    import threading
+
+    sr = 22050
+    y = librosa.clicks(times=np.arange(0, 20, 0.5), sr=sr, length=20 * sr) * 0.5
+    wav = tmp_path / "a.wav"
+    sf.write(wav, y.astype("float32"), sr)
+    stages: list[int] = []
+    analyzer = LibrosaAnalyzer(tmp_path / "numba")
+    out = analyzer._run([str(wav)], threading.Event(), stages.append)
+    assert stages == [1, 2, 3]
+    assert set(out) >= {"bpm", "tonic", "mode", "confidence", "timings"}

@@ -1209,16 +1209,7 @@ button.tasks-btn.open {
   margin-bottom: 0.4rem;
 }
 
-.inline-selects {
-  display: inline-flex;
-  gap: 0.4rem;
-}
-
-.vol select {
-  grid-column: span 1;
-  padding: 0.25rem 0.4rem;
-  border-radius: 8px;
-  border: 1px solid var(--border, #d9d9e3);
-  background: var(--surface, #fff);
-  font: inherit;
+.presets.wrap {
+  flex-wrap: wrap;
+  margin-top: 0.4rem;
 }

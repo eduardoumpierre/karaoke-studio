@@ -92,8 +92,8 @@ const MAX_LAG: usize = 170; // ≈ 70 Hz a 12 kHz
 const HOP: usize = 64; // ≈ 5,3 ms
 const YIN_THRESHOLD: f32 = 0.18;
 const YIN_REJECT: f32 = 0.3;
-/// Energia média mínima (≈ −46 dBFS) para tentar detectar altura.
-const MIN_POWER: f32 = 2.5e-5;
+/// Energia média mínima (≈ −52 dBFS) para tentar detectar altura.
+const MIN_POWER: f32 = 6.0e-6;
 
 struct Detector {
     hist: [f32; HIST],
@@ -266,7 +266,10 @@ impl Shifter {
 const MIN_SPEED_TAU: f32 = 0.25;
 const MAX_SPEED_TAU: f32 = 0.005;
 const MAX_CORRECTION: f32 = 2.5; // semitons
-const PITCH_TAU: f32 = 0.1;
+/// Suavização do "centro" da nota: lenta (deixa o vibrato passar) em velocidades baixas e
+/// rápida (acompanha e achata a deriva da voz) em velocidades altas.
+const PITCH_TAU_SLOW: f32 = 0.12;
+const PITCH_TAU_FAST: f32 = 0.02;
 const NOTE_JUMP: f32 = 1.5;
 const HOLD_TARGET: f32 = 0.65;
 const SETTLE_FRAMES: u32 = 5;
@@ -298,6 +301,7 @@ pub struct Tune {
     k_corr: f32,
     k_unvoiced: f32,
     alpha_slow: f32,
+    hop_s: f32,
     active: bool,
 }
 
@@ -328,7 +332,8 @@ impl Tune {
             mask: CHROMATIC,
             k_corr: 0.0,
             k_unvoiced: 1.0 - (-1.0 / (0.04 * rate)).exp(),
-            alpha_slow: 1.0 - (-hop_s / PITCH_TAU).exp(),
+            alpha_slow: 1.0 - (-hop_s / PITCH_TAU_SLOW).exp(),
+            hop_s,
             active: false,
         }
     }
@@ -341,6 +346,10 @@ impl Tune {
         let speed = s.speed.load().clamp(0.0, 1.0);
         let tau = MIN_SPEED_TAU * (MAX_SPEED_TAU / MIN_SPEED_TAU).powf(speed);
         self.k_corr = 1.0 - (-1.0 / (tau * self.rate)).exp();
+        // Acima de 50% de velocidade o centro da nota passa a ser seguido cada vez mais de perto.
+        let fast = ((speed - 0.5) * 2.0).clamp(0.0, 1.0);
+        let pitch_tau = PITCH_TAU_SLOW * (PITCH_TAU_FAST / PITCH_TAU_SLOW).powf(fast);
+        self.alpha_slow = 1.0 - (-self.hop_s / pitch_tau).exp();
         let latency = if self.on {
             self.shifter.latency_samples() / self.rate * 1000.0
         } else {
@@ -645,5 +654,66 @@ mod tests {
         let y = run(&mut t, &s, &x);
         let tail = &y[R as usize / 2..];
         assert_eq!(tail, &x[R as usize / 2..]);
+    }
+
+    /// Desvio-padrão (cents) da altura detectada ao longo do sinal.
+    fn wobble_cents(x: &[f32]) -> f64 {
+        let c: Vec<f64> = pitches(x)
+            .into_iter()
+            .flatten()
+            .map(|f| cents(f, 220.0))
+            .collect();
+        let mean = c.iter().sum::<f64>() / c.len() as f64;
+        (c.iter().map(|v| (v - mean).powi(2)).sum::<f64>() / c.len() as f64).sqrt()
+    }
+
+    /// Voz com deriva lenta (1,7 Hz, ±30 cents) e um leve tremido (7 Hz) em volta de uma nota.
+    fn wobbly() -> Vec<f32> {
+        voice(
+            |i| {
+                let t = i as f64 / R as f64;
+                let c = 30.0 * (2.0 * std::f64::consts::PI * 1.7 * t).sin()
+                    + 6.0 * (2.0 * std::f64::consts::PI * 7.0 * t).sin();
+                222.0 * 2f64.powf(c / 1200.0)
+            },
+            R as usize * 3,
+        )
+    }
+
+    #[test]
+    fn fast_speed_flattens_the_drift_but_slow_speed_keeps_it() {
+        let x = wobbly();
+        let before = wobble_cents(&x[R as usize..]);
+        let (mut hard, s) = on(1.0, 1.0, CHROMATIC);
+        let flat = wobble_cents(&run(&mut hard, &s, &x)[R as usize..]);
+        println!("deriva: original {before:.0} cents, efeito {flat:.0} cents");
+        assert!(flat < before * 0.4, "efeito: {before:.0} → {flat:.0} cents");
+        let (mut soft, s) = on(1.0, 0.3, CHROMATIC);
+        let kept = wobble_cents(&run(&mut soft, &s, &x)[R as usize..]);
+        println!("deriva: natural {kept:.0} cents");
+        assert!(
+            kept > before * 0.6,
+            "natural: {before:.0} → {kept:.0} cents"
+        );
+    }
+
+    #[test]
+    fn detects_a_noisy_breathy_voice() {
+        // voz + ruído a ~20 dB abaixo + tremolo de amplitude
+        let mut seed = 7u32;
+        let x: Vec<f32> = voice(|_| 196.0, R as usize * 2)
+            .iter()
+            .enumerate()
+            .map(|(i, v)| {
+                seed = seed.wrapping_mul(1664525).wrapping_add(1013904223);
+                let noise = ((seed >> 8) as f32 / (1u32 << 24) as f32 - 0.5) * 0.06;
+                let trem =
+                    0.8 + 0.2 * (i as f32 * 2.0 * std::f32::consts::PI * 5.0 / R as f32).sin();
+                v * trem + noise
+            })
+            .collect();
+        let p = pitches(&x[R as usize / 2..]);
+        let hit = p.iter().flatten().count() as f64 / p.len() as f64;
+        assert!(hit > 0.85, "só {:.0}% dos quadros detectados", hit * 100.0);
     }
 }

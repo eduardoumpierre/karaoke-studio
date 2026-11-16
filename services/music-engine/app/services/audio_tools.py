@@ -25,6 +25,21 @@ def ffmpeg_command() -> str:
     return os.environ.get("KARAOKE_FFMPEG", "ffmpeg")
 
 
+def kill_tree(proc: subprocess.Popen) -> None:
+    """Mata o processo e os filhos dele. No Windows, o python.exe de um venv é só um lançador
+    que inicia o interpretador de verdade como filho: matar só o lançador deixaria o filho vivo."""
+    if os.name == "nt" and proc.poll() is None:
+        subprocess.run(  # noqa: S603
+            ["taskkill", "/PID", str(proc.pid), "/T", "/F"],  # noqa: S607
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            stdin=subprocess.DEVNULL,
+            creationflags=NO_WINDOW,
+            check=False,
+        )
+    stop_process(proc)
+
+
 def stop_process(proc: subprocess.Popen) -> None:
     proc.kill()
     try:
@@ -38,7 +53,11 @@ def run_cancellable(cmd: list[str], cancel: threading.Event, what: str) -> None:
     with tempfile.TemporaryFile() as err:
         try:
             proc = subprocess.Popen(
-                cmd, stdout=subprocess.DEVNULL, stderr=err, creationflags=NO_WINDOW
+                cmd,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=err,
+                creationflags=NO_WINDOW,
             )
         except FileNotFoundError as exc:
             raise AudioToolError(f"{what}: programa não encontrado ({cmd[0]}).") from exc
