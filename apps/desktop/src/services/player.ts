@@ -61,6 +61,8 @@ export interface VoiceSettings {
   tuneAmount: number;
   tuneSpeed: number;
   tuneScale: number;
+  /** Modo de latência da voz: 0 = estável, 1 = equilibrado, 2 = mínimo. */
+  latencyMode: number;
 }
 
 export interface EngineMix {
@@ -81,7 +83,15 @@ export type PlayerEvent =
   | { type: "ended" }
   | { type: "error"; message: string }
   | { type: "micLevel"; peak: number }
-  | { type: "voice"; bridgeMs: number; targetMs: number; underruns: number; tuneMs: number };
+  | { type: "voice"; bridgeMs: number; targetMs: number; underruns: number; tuneMs: number }
+  | {
+      type: "latency";
+      /** Atrasos informados pelos dispositivos (ms) e tamanho médio dos blocos (ms). */
+      inputMs: number;
+      outputMs: number;
+      inputPeriodMs: number;
+      outputPeriodMs: number;
+    };
 
 /** O que a interface pode pedir ao motor de áudio (Rust, via Tauri). */
 export interface PlayerService {
@@ -196,16 +206,17 @@ export function simulatedPlayer(): PlayerService {
       voiceTimer = undefined;
       if (!settings.monitor) return null;
       micTimer = setInterval(() => emit({ type: "micLevel", peak: Math.random() * 0.5 }), 33);
-      voiceTimer = setInterval(
-        () => emit({
-            type: "voice",
-            bridgeMs: 25,
-            targetMs: 25,
-            underruns: 0,
-            tuneMs: settings.tuneOn ? 12 : 0,
-          }),
-        500,
-      );
+      voiceTimer = setInterval(() => {
+        const bridge = [25, 12, 8][settings.latencyMode] ?? 25;
+        emit({
+          type: "voice",
+          bridgeMs: bridge,
+          targetMs: bridge,
+          underruns: 0,
+          tuneMs: settings.tuneOn ? 12 : 0,
+        });
+        emit({ type: "latency", inputMs: 10, outputMs: 20, inputPeriodMs: 10, outputPeriodMs: 10 });
+      }, 500);
       return { name: input ?? inputs[0]!.name, sampleRate: 48000, channels: 1 };
     },
     onEvent: async (cb) => {

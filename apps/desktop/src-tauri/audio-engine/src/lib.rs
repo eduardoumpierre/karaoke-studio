@@ -10,6 +10,7 @@ pub mod decode;
 pub mod engine;
 pub mod fx;
 pub mod playback;
+pub mod prio;
 pub mod resample;
 pub mod tune;
 pub mod voice;

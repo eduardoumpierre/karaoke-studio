@@ -23,6 +23,9 @@ export interface VoiceStats {
   underruns: number;
   /** Atraso extra do autotune (0 com ele desligado). */
   tuneMs: number;
+  /** Atrasos informados pelos dispositivos (0 até a primeira medição). */
+  inputMs: number;
+  outputMs: number;
 }
 
 export interface VoiceState {
@@ -90,7 +93,16 @@ export function useVoice(service: PlayerService, songKey: SongKey | null = null)
     void service
       .onEvent((e) => {
         if (e.type === "micLevel") setPeak((p) => Math.max(e.peak, p * 0.9));
-        else if (e.type === "voice") setStats({ bridgeMs: e.bridgeMs, underruns: e.underruns, tuneMs: e.tuneMs });
+        else if (e.type === "voice")
+          setStats((old) => ({
+            bridgeMs: e.bridgeMs,
+            underruns: e.underruns,
+            tuneMs: e.tuneMs,
+            inputMs: old?.inputMs ?? 0,
+            outputMs: old?.outputMs ?? 0,
+          }));
+        else if (e.type === "latency")
+          setStats((old) => (old ? { ...old, inputMs: e.inputMs, outputMs: e.outputMs } : old));
         else if (e.type === "error") {
           setSettings((s) => (s.singing ? { ...s, singing: false } : s));
         }

@@ -36,9 +36,13 @@ export function currentLineIndex(
   return found;
 }
 
-/** Posição (s) na música onde o verso começa, já com o ajuste de tempo da letra. */
-export function lineStartSeconds(timeMs: number, offsetMs: number): number {
-  return Math.max(0, (timeMs + offsetMs) / 1000 - LINE_LEAD_IN_S);
+/**
+ * Posição (s) para onde o clique no verso pula: um pouco antes do verso (a entrada), já com o
+ * ajuste de tempo da letra. `latencyS` é o atraso da saída: a letra é marcada pelo que você
+ * ouve (posição − atraso), então o pulo soma o atraso para o verso já aparecer destacado.
+ */
+export function lineStartSeconds(timeMs: number, offsetMs: number, latencyS = 0): number {
+  return Math.max(0, (timeMs + offsetMs) / 1000 - LINE_LEAD_IN_S + latencyS);
 }
 
 export function clampOffset(ms: number): number {

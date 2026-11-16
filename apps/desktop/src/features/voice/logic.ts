@@ -33,6 +33,8 @@ export interface VoiceState {
   tuneScale: "song" | "chromatic" | "manual";
   tuneTonic: number;
   tuneMode: Mode;
+  /** Equilíbrio entre latência e estabilidade da voz. */
+  latencyMode: LatencyMode;
 }
 
 export type FxFields = Pick<
@@ -46,6 +48,47 @@ export type FxFields = Pick<
   | "echoPercent"
   | "echoMs"
 >;
+
+export type LatencyMode = "stable" | "balanced" | "minimal";
+
+export const LATENCY_MODES: { id: LatencyMode; label: string; hint: string }[] = [
+  {
+    id: "stable",
+    label: "Estável",
+    hint: "Buffers do sistema e estoque de 25 ms: o mais seguro contra estalos",
+  },
+  {
+    id: "balanced",
+    label: "Equilibrado",
+    hint: "Buffers de ~5 ms e estoque menor: bem menos atraso, ainda tranquilo",
+  },
+  {
+    id: "minimal",
+    label: "Mínimo",
+    hint: "Buffers de ~2,5 ms e o menor estoque possível: se estalar, volte ao Equilibrado",
+  },
+];
+
+const LATENCY_MODE_INDEX: Record<LatencyMode, number> = { stable: 0, balanced: 1, minimal: 2 };
+
+export interface VoiceLatency {
+  /** Do som ser capturado até o app (informado pelo dispositivo). */
+  inputMs: number;
+  /** Estoque da ponte entre o microfone e a saída. */
+  bridgeMs: number;
+  /** Do app até o som sair (informado pelo dispositivo). */
+  outputMs: number;
+  /** Atraso extra do autotune (0 desligado). */
+  tuneMs: number;
+}
+
+/** Distância típica entre as caixas e o ouvido (~1 m) — o som leva cerca de 3 ms. */
+export const AIR_MS = 3;
+
+/** Latência estimada da voz até o ouvido: soma das partes que o app e os dispositivos informam. */
+export function totalVoiceLatencyMs(l: VoiceLatency): number {
+  return l.inputMs + l.bridgeMs + l.outputMs + l.tuneMs + AIR_MS;
+}
 
 export interface VoicePreset {
   id: string;
@@ -148,6 +191,7 @@ export const DEFAULT_VOICE: VoiceState = {
   tuneScale: "song",
   tuneTonic: 0,
   tuneMode: "major",
+  latencyMode: "stable",
   ...(VOICE_PRESETS[1] as VoicePreset).fx,
 };
 
@@ -249,6 +293,7 @@ export function toEngineVoice(v: VoiceState, songKey: SongKey | null = null): Vo
     tuneAmount: clamp(v.tuneAmountPercent, 0, 100) / 100,
     tuneSpeed: clamp(v.tuneSpeedPercent, 0, 100) / 100,
     tuneScale: tuneMask(v, songKey),
+    latencyMode: LATENCY_MODE_INDEX[v.latencyMode] ?? 0,
   };
 }
 

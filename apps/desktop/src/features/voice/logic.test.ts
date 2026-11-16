@@ -132,3 +132,23 @@ describe("autotune", () => {
     expect(activeTuneStyle({ tuneAmountPercent: 51, tuneSpeedPercent: 40 })).toBeNull();
   });
 });
+
+describe("latência", () => {
+  it("soma as partes e o ar", async () => {
+    const { totalVoiceLatencyMs, AIR_MS } = await import("./logic");
+    expect(totalVoiceLatencyMs({ inputMs: 10, bridgeMs: 25, outputMs: 20, tuneMs: 0 })).toBe(
+      55 + AIR_MS,
+    );
+    expect(totalVoiceLatencyMs({ inputMs: 3, bridgeMs: 8, outputMs: 5, tuneMs: 12 })).toBe(
+      28 + AIR_MS,
+    );
+  });
+
+  it("converte o modo para o motor e começa estável", async () => {
+    const { toEngineVoice, DEFAULT_VOICE } = await import("./logic");
+    expect(DEFAULT_VOICE.latencyMode).toBe("stable");
+    expect(toEngineVoice(DEFAULT_VOICE).latencyMode).toBe(0);
+    expect(toEngineVoice({ ...DEFAULT_VOICE, latencyMode: "balanced" }).latencyMode).toBe(1);
+    expect(toEngineVoice({ ...DEFAULT_VOICE, latencyMode: "minimal" }).latencyMode).toBe(2);
+  });
+});

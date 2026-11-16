@@ -22,6 +22,34 @@ const MASK: u64 = (RING_SIZE as u64) - 1;
 /// Estoque-alvo inicial da ponte (ms). Sobe sozinho se faltarem amostras (underrun).
 pub const TARGET_MS: f64 = 25.0;
 const TARGET_MAX_MS: f64 = 80.0;
+
+/// Modos de latência da voz: o que o usuário escolhe na interface.
+pub const MODE_STABLE: u32 = 0;
+pub const MODE_BALANCED: u32 = 1;
+pub const MODE_MINIMAL: u32 = 2;
+
+/// Estoque-alvo da ponte (ms) para o modo e os períodos medidos dos callbacks de entrada e saída.
+/// A entrada chega em blocos e a saída consome em blocos: o estoque precisa cobrir os dois, ou
+/// falta amostra (estalo). Com blocos pequenos dá para trabalhar com bem menos que os 25 ms do
+/// modo estável; se ainda faltar, o estoque cresce sozinho (ver `grow`).
+pub fn bridge_floor_ms(mode: u32, in_period_ms: f32, out_period_ms: f32) -> f32 {
+    let known = in_period_ms > 0.0 && out_period_ms > 0.0;
+    let base = in_period_ms + out_period_ms;
+    let ms = match mode {
+        MODE_MINIMAL if known => (base + 3.0).max(6.0),
+        MODE_MINIMAL => 12.0,
+        MODE_BALANCED if known => (base + 8.0).max(12.0),
+        MODE_BALANCED => 18.0,
+        _ => return TARGET_MS as f32,
+    };
+    ms.min(TARGET_MS as f32)
+}
+
+/// Média móvel simples de uma medida escrita só por uma thread.
+fn smooth(slot: &AtomicF32, x: f32) {
+    let old = slot.load();
+    slot.store(if old <= 0.0 { x } else { old * 0.9 + x * 0.1 });
+}
 /// Quanto a velocidade de leitura pode variar para compensar a deriva (±0,5%).
 const MAX_ADJUST: f64 = 0.005;
 /// Ganho do controlador (por segundo de erro de estoque).
@@ -78,6 +106,15 @@ pub struct VoiceShared {
     pub fill_ms: AtomicF32,
     pub target_ms: AtomicF32,
     pub underruns: AtomicU64,
+    /// Modo de latência escolhido (`MODE_*`).
+    pub latency_mode: AtomicU32,
+    /// Duração média dos blocos dos callbacks de entrada e de saída (ms).
+    pub in_period_ms: AtomicF32,
+    pub out_period_ms: AtomicF32,
+    /// Atraso que o dispositivo informa: do som ser capturado até o callback (entrada) e do
+    /// callback até ser tocado (saída), em ms. É uma estimativa do driver.
+    pub in_latency_ms: AtomicF32,
+    pub out_latency_ms: AtomicF32,
     /// EQ, compressor, eco e reverb.
     pub fx: FxShared,
     /// Autotune.
@@ -85,6 +122,21 @@ pub struct VoiceShared {
 }
 
 impl VoiceShared {
+    /// Chamado pelo callback da entrada (`input = true`) ou da saída com o tamanho do bloco e o
+    /// atraso informado pelo dispositivo.
+    pub fn note_block(&self, input: bool, frames: usize, rate: u32, latency_s: Option<f64>) {
+        let period = frames as f32 / rate.max(1) as f32 * 1000.0;
+        let (p, l) = if input {
+            (&self.in_period_ms, &self.in_latency_ms)
+        } else {
+            (&self.out_period_ms, &self.out_latency_ms)
+        };
+        smooth(p, period);
+        if let Some(s) = latency_s {
+            smooth(l, (s * 1000.0) as f32);
+        }
+    }
+
     pub fn new() -> Arc<VoiceShared> {
         Arc::new(VoiceShared {
             monitor: AtomicBool::new(false),
@@ -95,6 +147,11 @@ impl VoiceShared {
             fill_ms: AtomicF32::new(0.0),
             target_ms: AtomicF32::new(TARGET_MS as f32),
             underruns: AtomicU64::new(0),
+            latency_mode: AtomicU32::new(MODE_STABLE),
+            in_period_ms: AtomicF32::new(0.0),
+            out_period_ms: AtomicF32::new(0.0),
+            in_latency_ms: AtomicF32::new(0.0),
+            out_latency_ms: AtomicF32::new(0.0),
             fx: FxShared::new(),
             tune: TuneShared::new(),
         })
@@ -214,6 +271,10 @@ pub struct VoiceOut {
     /// Só volta a tocar quando o microfone tiver escrito amostras novas além deste ponto.
     prime_after: u64,
     target: f64,
+    /// Estoque de base do modo atual (ms) e quanto ele cresceu por causa de faltas de amostra.
+    floor_ms: f32,
+    grow: f64,
+    mode: u32,
     fill_smooth: f64,
     adjust: f64,
     level: f32,
@@ -237,6 +298,9 @@ impl VoiceOut {
             primed: false,
             prime_after: 0,
             target,
+            floor_ms: TARGET_MS as f32,
+            grow: 1.0,
+            mode: MODE_STABLE,
             fill_smooth: target,
             adjust: 0.0,
             level: 0.0,
@@ -248,9 +312,31 @@ impl VoiceOut {
         }
     }
 
+    /// Define o estoque-alvo: base do modo vezes o crescimento causado por faltas de amostra.
+    fn retarget(&mut self, floor_ms: f32) {
+        self.floor_ms = floor_ms;
+        let ms = (floor_ms as f64 * self.grow).min(TARGET_MAX_MS);
+        self.target = ms / 1000.0 * self.in_rate;
+        self.shared.target_ms.store(ms as f32);
+    }
+
     /// Chamar uma vez no começo de cada callback da saída.
     pub fn begin_block(&mut self) {
         self.head = self.ring.head();
+        let mode = self.shared.latency_mode.load(Ordering::Relaxed);
+        let floor = bridge_floor_ms(
+            mode,
+            self.shared.in_period_ms.load(),
+            self.shared.out_period_ms.load(),
+        );
+        if mode != self.mode {
+            self.mode = mode;
+            self.grow = 1.0;
+            self.retarget(floor);
+            self.primed = false; // recomeça no estoque novo
+        } else if !self.primed && (floor - self.floor_ms).abs() > 0.5 {
+            self.retarget(floor);
+        }
         self.fx.begin_block(&self.shared.fx);
         self.tune.begin_block(&self.shared.tune);
         if !self.shared.monitor.load(Ordering::Relaxed) {
@@ -300,10 +386,8 @@ impl VoiceOut {
         if i < 1 || i + 2 >= self.head {
             // Faltou amostra: silêncio, aumenta o estoque-alvo e espera encher de novo.
             self.primed = false;
-            self.target = (self.target * 1.25).min(TARGET_MAX_MS / 1000.0 * self.in_rate);
-            self.shared
-                .target_ms
-                .store((self.target / self.in_rate * 1000.0) as f32);
+            self.grow = (self.grow * 1.25).min(16.0);
+            self.retarget(self.floor_ms);
             self.prime_after = self.head + self.target as u64;
             self.shared.underruns.fetch_add(1, Ordering::Relaxed);
             return (0.0, 0.0);
@@ -628,5 +712,62 @@ mod tests {
             "rms {}",
             rms(&got[9_000..])
         );
+    }
+
+    #[test]
+    fn bridge_floor_depends_on_mode_and_block_sizes() {
+        // estável: sempre 25 ms, como antes
+        assert_eq!(bridge_floor_ms(MODE_STABLE, 2.7, 2.7), TARGET_MS as f32);
+        assert_eq!(bridge_floor_ms(MODE_STABLE, 0.0, 0.0), TARGET_MS as f32);
+        // blocos pequenos: estoque bem menor
+        let minimal = bridge_floor_ms(MODE_MINIMAL, 2.7, 2.7);
+        let balanced = bridge_floor_ms(MODE_BALANCED, 2.7, 2.7);
+        assert!((8.0..9.0).contains(&minimal), "{minimal}");
+        assert!(
+            balanced > minimal && balanced < TARGET_MS as f32,
+            "{balanced}"
+        );
+        // sem medidas ainda: valores prudentes; blocos grandes nunca passam do modo estável
+        assert_eq!(bridge_floor_ms(MODE_MINIMAL, 0.0, 0.0), 12.0);
+        assert_eq!(bridge_floor_ms(MODE_MINIMAL, 20.0, 20.0), TARGET_MS as f32);
+    }
+
+    #[test]
+    fn switching_to_minimal_lowers_the_bridge_and_underruns_still_grow_it() {
+        let (ring, shared, mut out) = setup(R, R);
+        shared.in_period_ms.store(2.7);
+        shared.out_period_ms.store(2.7);
+        ring.write(4800, |i| (i as f32 * 0.01).sin());
+        out.begin_block();
+        assert_eq!(shared.target_ms.load(), TARGET_MS as f32);
+        shared.latency_mode.store(MODE_MINIMAL, Ordering::Relaxed);
+        out.begin_block();
+        let low = shared.target_ms.load();
+        assert!(low < 10.0, "{low}");
+        // sem amostras novas: falta, e o estoque cresce a partir do novo piso
+        ring.write(4800, |_| 0.0);
+        out.begin_block();
+        for _ in 0..6000 {
+            out.next_stereo();
+        }
+        assert!(shared.underruns.load(Ordering::Relaxed) > 0);
+        assert!(shared.target_ms.load() > low);
+        // voltar ao estável zera o crescimento
+        shared.latency_mode.store(MODE_STABLE, Ordering::Relaxed);
+        out.begin_block();
+        assert_eq!(shared.target_ms.load(), TARGET_MS as f32);
+    }
+
+    #[test]
+    fn note_block_smooths_periods_and_latencies() {
+        let shared = VoiceShared::new();
+        shared.note_block(true, 128, 48_000, Some(0.010));
+        assert!((shared.in_period_ms.load() - 2.667).abs() < 0.01);
+        assert!((shared.in_latency_ms.load() - 10.0).abs() < 0.01);
+        shared.note_block(false, 480, 48_000, None);
+        assert!((shared.out_period_ms.load() - 10.0).abs() < 0.01);
+        assert_eq!(shared.out_latency_ms.load(), 0.0);
+        shared.note_block(true, 480, 48_000, Some(0.020));
+        assert!(shared.in_latency_ms.load() > 10.0 && shared.in_latency_ms.load() < 12.0);
     }
 }

@@ -192,6 +192,11 @@ pub struct Playback {
 }
 
 impl Playback {
+    /// Os ajustes e medidas da voz (o callback da saída registra aqui o tamanho dos blocos).
+    pub fn voice_shared(&self) -> Arc<crate::voice::VoiceShared> {
+        self.shared.voice.clone()
+    }
+
     pub fn new(shared: Arc<Shared>, rate: u32) -> Self {
         let rate = rate as f32;
         let v_master = shared.master.load();

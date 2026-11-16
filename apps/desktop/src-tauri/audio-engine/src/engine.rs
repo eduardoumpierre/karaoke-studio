@@ -7,11 +7,14 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
-use cpal::{FromSample, Sample, SampleFormat, SizedSample, Stream};
+use cpal::{
+    BufferSize, FromSample, Sample, SampleFormat, SizedSample, Stream, StreamConfig,
+    SupportedBufferSize, SupportedStreamConfig,
+};
 use serde::{Deserialize, Serialize};
 
 use crate::playback::{Loaded, Mix, Playback, Shared};
-use crate::voice::{Ring, VoiceOut};
+use crate::voice::{Ring, VoiceOut, VoiceShared, MODE_BALANCED, MODE_MINIMAL};
 
 /// Intervalo dos eventos de estado para a interface (~30 Hz).
 const TICK: Duration = Duration::from_millis(33);
@@ -88,6 +91,9 @@ pub struct VoiceSettings {
     pub tune_speed: f32,
     #[serde(default = "default_tune_scale")]
     pub tune_scale: u32,
+    /// Modo de latência da voz: 0 = estável, 1 = equilibrado, 2 = mínimo.
+    #[serde(default)]
+    pub latency_mode: u32,
 }
 
 fn default_tune_speed() -> f32 {
@@ -136,6 +142,16 @@ pub enum Event {
         /// Atraso extra do autotune em ms (0 com o autotune desligado).
         tune_ms: f32,
     },
+    /// Atrasos que os dispositivos informam (~2 vezes por segundo): da captura do microfone até o
+    /// app, e do app até o som sair. Servem para estimar a latência total e alinhar a letra.
+    #[serde(rename_all = "camelCase")]
+    Latency {
+        input_ms: f32,
+        output_ms: f32,
+        /// Tamanho médio dos blocos de entrada e saída (ms).
+        input_period_ms: f32,
+        output_period_ms: f32,
+    },
 }
 
 type Reply<T> = Sender<Result<T, String>>;
@@ -171,6 +187,7 @@ pub struct Engine {
 impl Engine {
     /// Inicia a thread do motor. `on_event` é chamado de dentro dela (deve ser rápido).
     pub fn start(on_event: impl Fn(Event) + Send + 'static) -> Engine {
+        crate::prio::boost_process();
         let (tx, rx) = mpsc::channel();
         let tx_thread = tx.clone();
         std::thread::Builder::new()
@@ -271,6 +288,10 @@ struct EngineThread {
     /// Músicas já trocadas; a memória é liberada aqui, nunca no callback de áudio.
     retired: Vec<Arc<Loaded>>,
     mic: Option<Mic>,
+    /// Saída pedida pelo usuário (None = padrão do sistema), para reabrir ao mudar o buffer.
+    output_wanted: Option<Option<String>>,
+    /// Modo de latência atual (`MODE_*`).
+    latency_mode: u32,
     /// Filas de microfones já fechados; a memória é liberada aqui, nunca no callback.
     retired_rings: Vec<Arc<Ring>>,
     ticks: u32,
@@ -287,6 +308,8 @@ impl EngineThread {
             loaded: None,
             retired: Vec::new(),
             mic: None,
+            output_wanted: None,
+            latency_mode: 0,
             retired_rings: Vec::new(),
             ticks: 0,
             last_state: None,
@@ -389,6 +412,16 @@ impl EngineThread {
                 });
             }
         }
+        if self.ticks % 15 == 0 && self.output.is_some() {
+            let v = &self.shared.voice;
+            let mic_on = self.mic.is_some();
+            self.emit(Event::Latency {
+                input_ms: if mic_on { v.in_latency_ms.load() } else { 0.0 },
+                output_ms: v.out_latency_ms.load(),
+                input_period_ms: if mic_on { v.in_period_ms.load() } else { 0.0 },
+                output_period_ms: v.out_period_ms.load(),
+            });
+        }
         let (position, playing) = self.position();
         let (peak_l, peak_r) = self.shared.take_peaks();
         let duration = self.loaded.as_ref().map_or(0.0, |l| l.duration_secs());
@@ -453,6 +486,7 @@ impl EngineThread {
     }
 
     fn set_output(&mut self, name: Option<String>) -> Result<OutputInfo, String> {
+        self.output_wanted = Some(name.clone());
         let was_playing = self.shared.playing.swap(false, Ordering::AcqRel);
         self.output = None; // fecha o dispositivo anterior primeiro (o modo exclusivo exige)
         let _ = was_playing;
@@ -479,7 +513,6 @@ impl EngineThread {
         }
         self.shared.position.store(0, Ordering::Relaxed);
         self.shared.seek_to.store(-1, Ordering::Release);
-        let playback = Playback::new(self.shared.clone(), info.sample_rate);
         // A voz ao vivo precisa da taxa da nova saída: refaz o lado da saída da ponte.
         if let Some(mic) = &self.mic {
             self.shared.install_voice(Some(VoiceOut::new(
@@ -489,21 +522,8 @@ impl EngineThread {
                 info.sample_rate,
             )));
         }
-        let stream = match config.sample_format() {
-            SampleFormat::F32 => {
-                build_output::<f32>(&device, &config.into(), playback, self.tx.clone())
-            }
-            SampleFormat::I16 => {
-                build_output::<i16>(&device, &config.into(), playback, self.tx.clone())
-            }
-            SampleFormat::U16 => {
-                build_output::<u16>(&device, &config.into(), playback, self.tx.clone())
-            }
-            SampleFormat::I32 => {
-                build_output::<i32>(&device, &config.into(), playback, self.tx.clone())
-            }
-            other => Err(format!("formato de amostra não suportado: {other:?}")),
-        }?;
+        let frames = buffer_frames(self.latency_mode, info.sample_rate);
+        let stream = open_output(&device, &config, frames, &self.shared, &self.tx)?;
         stream
             .play()
             .map_err(|e| format!("não foi possível iniciar a saída: {e}"))?;
@@ -525,7 +545,54 @@ impl EngineThread {
         }
     }
 
+    /// Troca o modo de latência: ajusta a ponte na hora e reabre os dispositivos com o novo
+    /// tamanho de buffer (a música e a posição são mantidas).
+    fn set_latency_mode(&mut self, mode: u32) {
+        let mode = mode.min(MODE_MINIMAL);
+        if mode == self.latency_mode {
+            return;
+        }
+        let old_frames = self
+            .output
+            .as_ref()
+            .and_then(|(_, i)| buffer_frames(self.latency_mode, i.sample_rate));
+        self.latency_mode = mode;
+        self.shared
+            .voice
+            .latency_mode
+            .store(mode, Ordering::Relaxed);
+        let new_frames = self
+            .output
+            .as_ref()
+            .and_then(|(_, i)| buffer_frames(mode, i.sample_rate));
+        if old_frames == new_frames {
+            return; // o buffer é o mesmo: só a ponte mudou
+        }
+        let loaded = self.loaded.clone();
+        let (position, playing) = self.position();
+        if let Some(name) = self.output_wanted.clone() {
+            match self.set_output(name) {
+                Ok(_) => {
+                    if let Some(l) = loaded {
+                        if let Err(e) = self.install(l, position, playing) {
+                            log::warn!("não foi possível retomar a música: {e}");
+                        }
+                    }
+                }
+                Err(e) => log::warn!("não foi possível reabrir a saída: {e}"),
+            }
+        }
+        if let Some(wanted) = self.mic.as_ref().map(|m| m.wanted.clone()) {
+            self.stop_mic();
+            if let Err(e) = self.start_mic(wanted) {
+                log::warn!("não foi possível reabrir o microfone: {e}");
+            }
+        }
+        log::info!("modo de latência: {mode} (buffer {new_frames:?} quadros)");
+    }
+
     fn set_voice(&mut self, v: VoiceSettings) {
+        self.set_latency_mode(v.latency_mode);
         let shared = &self.shared.voice;
         shared.volume.store(v.volume.clamp(0.0, 1.5));
         shared.input_gain.store(v.input_gain.clamp(0.0, 16.0));
@@ -584,19 +651,16 @@ impl EngineThread {
         };
         let peak = Arc::new(AtomicU32::new(0));
         let ring = Ring::new();
-        let channels = config.channels() as usize;
-        let sink = MicSink {
-            ring: ring.clone(),
-            peak: peak.clone(),
-            channels,
-        };
-        let stream = match config.sample_format() {
-            SampleFormat::F32 => build_input::<f32>(&device, &config.into(), sink, self.tx.clone()),
-            SampleFormat::I16 => build_input::<i16>(&device, &config.into(), sink, self.tx.clone()),
-            SampleFormat::U16 => build_input::<u16>(&device, &config.into(), sink, self.tx.clone()),
-            SampleFormat::I32 => build_input::<i32>(&device, &config.into(), sink, self.tx.clone()),
-            other => Err(format!("formato de amostra não suportado: {other:?}")),
-        }?;
+        let frames = buffer_frames(self.latency_mode, info.sample_rate);
+        let stream = open_input(
+            &device,
+            &config,
+            frames,
+            &ring,
+            &peak,
+            &self.shared.voice,
+            &self.tx,
+        )?;
         stream
             .play()
             .map_err(|e| format!("não foi possível abrir o microfone: {e}"))?;
@@ -623,6 +687,96 @@ impl EngineThread {
     }
 }
 
+/// Tamanho do buffer (em quadros) pedido ao dispositivo em cada modo; `None` = o padrão dele.
+fn buffer_frames(mode: u32, rate: u32) -> Option<u32> {
+    match mode {
+        MODE_BALANCED => Some(rate / 200),          // ~5 ms
+        MODE_MINIMAL => Some((rate / 400).max(32)), // ~2,5 ms
+        _ => None,
+    }
+}
+
+/// A configuração do dispositivo, com o buffer pedido (dentro do que ele aceita).
+fn with_buffer(base: StreamConfig, supported: &SupportedBufferSize, frames: u32) -> StreamConfig {
+    let frames = match supported {
+        SupportedBufferSize::Range { min, max } => frames.clamp(*min, *max),
+        SupportedBufferSize::Unknown => frames,
+    };
+    StreamConfig {
+        buffer_size: BufferSize::Fixed(frames),
+        ..base
+    }
+}
+
+/// Abre a saída; se o dispositivo recusar o buffer pedido, tenta de novo com o padrão dele.
+fn open_output(
+    device: &cpal::Device,
+    supported: &SupportedStreamConfig,
+    frames: Option<u32>,
+    shared: &Arc<Shared>,
+    tx: &Sender<Cmd>,
+) -> Result<Stream, String> {
+    let rate = supported.sample_rate().0;
+    let attempt = |cfg: StreamConfig| -> Result<Stream, String> {
+        let playback = Playback::new(shared.clone(), rate);
+        match supported.sample_format() {
+            SampleFormat::F32 => build_output::<f32>(device, &cfg, playback, tx.clone()),
+            SampleFormat::I16 => build_output::<i16>(device, &cfg, playback, tx.clone()),
+            SampleFormat::U16 => build_output::<u16>(device, &cfg, playback, tx.clone()),
+            SampleFormat::I32 => build_output::<i32>(device, &cfg, playback, tx.clone()),
+            other => Err(format!("formato de amostra não suportado: {other:?}")),
+        }
+    };
+    if let Some(f) = frames {
+        let cfg = with_buffer(supported.config(), supported.buffer_size(), f);
+        match attempt(cfg) {
+            Ok(stream) => return Ok(stream),
+            Err(e) => log::warn!("a saída recusou o buffer de {f} quadros ({e}); usando o padrão"),
+        }
+    }
+    attempt(supported.config())
+}
+
+/// Abre o microfone; mesma regra de volta ao padrão se o buffer pedido for recusado.
+fn open_input(
+    device: &cpal::Device,
+    supported: &SupportedStreamConfig,
+    frames: Option<u32>,
+    ring: &Arc<Ring>,
+    peak: &Arc<AtomicU32>,
+    voice: &Arc<VoiceShared>,
+    tx: &Sender<Cmd>,
+) -> Result<Stream, String> {
+    let channels = supported.channels() as usize;
+    let rate = supported.sample_rate().0;
+    let attempt = |cfg: StreamConfig| -> Result<Stream, String> {
+        let sink = MicSink {
+            ring: ring.clone(),
+            peak: peak.clone(),
+            channels,
+            voice: voice.clone(),
+            rate,
+        };
+        match supported.sample_format() {
+            SampleFormat::F32 => build_input::<f32>(device, &cfg, sink, tx.clone()),
+            SampleFormat::I16 => build_input::<i16>(device, &cfg, sink, tx.clone()),
+            SampleFormat::U16 => build_input::<u16>(device, &cfg, sink, tx.clone()),
+            SampleFormat::I32 => build_input::<i32>(device, &cfg, sink, tx.clone()),
+            other => Err(format!("formato de amostra não suportado: {other:?}")),
+        }
+    };
+    if let Some(f) = frames {
+        let cfg = with_buffer(supported.config(), supported.buffer_size(), f);
+        match attempt(cfg) {
+            Ok(stream) => return Ok(stream),
+            Err(e) => {
+                log::warn!("o microfone recusou o buffer de {f} quadros ({e}); usando o padrão")
+            }
+        }
+    }
+    attempt(supported.config())
+}
+
 fn build_output<T>(
     device: &cpal::Device,
     config: &cpal::StreamConfig,
@@ -633,10 +787,25 @@ where
     T: SizedSample + FromSample<f32> + Sample,
 {
     let channels = config.channels as usize;
+    let rate = config.sample_rate.0;
+    let voice = playback.voice_shared();
+    let mut boosted = false;
     device
         .build_output_stream(
             config,
-            move |data: &mut [T], _| playback.render(data, channels),
+            move |data: &mut [T], info: &cpal::OutputCallbackInfo| {
+                if !boosted {
+                    boosted = true;
+                    crate::prio::boost_audio_thread("saída");
+                }
+                let ts = info.timestamp();
+                let ahead = ts
+                    .playback
+                    .duration_since(&ts.callback)
+                    .map(|d| d.as_secs_f64());
+                voice.note_block(false, data.len() / channels.max(1), rate, ahead);
+                playback.render(data, channels)
+            },
             move |e| {
                 let _ = errors.send(Cmd::StreamError(e.to_string()));
             },
@@ -650,16 +819,19 @@ struct MicSink {
     ring: Arc<Ring>,
     peak: Arc<AtomicU32>,
     channels: usize,
+    voice: Arc<VoiceShared>,
+    rate: u32,
 }
 
 impl MicSink {
-    fn push<T>(&self, data: &[T])
+    fn push<T>(&self, data: &[T], age_s: Option<f64>)
     where
         T: SizedSample,
         f32: FromSample<T>,
     {
         let ch = self.channels.max(1);
         let frames = data.len() / ch;
+        self.voice.note_block(true, frames, self.rate, age_s);
         let mut p = 0.0f32;
         self.ring.write(frames, |i| {
             let frame = &data[i * ch..(i + 1) * ch];
@@ -685,10 +857,22 @@ where
     T: SizedSample,
     f32: FromSample<T>,
 {
+    let mut boosted = false;
     device
         .build_input_stream(
             config,
-            move |data: &[T], _| sink.push(data),
+            move |data: &[T], info: &cpal::InputCallbackInfo| {
+                if !boosted {
+                    boosted = true;
+                    crate::prio::boost_audio_thread("microfone");
+                }
+                let ts = info.timestamp();
+                let age = ts
+                    .callback
+                    .duration_since(&ts.capture)
+                    .map(|d| d.as_secs_f64());
+                sink.push(data, age)
+            },
             move |e| {
                 let _ = errors.send(Cmd::StreamError(e.to_string()));
             },

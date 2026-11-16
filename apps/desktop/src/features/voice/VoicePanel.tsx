@@ -8,11 +8,13 @@ import {
   EQ_DB_RANGE,
   GAIN_DB_RANGE,
   GATE_DB_RANGE,
+  LATENCY_MODES,
   TUNE_STYLES,
   VOICE_PRESETS,
   activeTuneStyle,
   formatDb,
   levelAdvice,
+  totalVoiceLatencyMs,
   meterLevel,
 } from "./logic";
 import type { VoiceState } from "./useVoice";
@@ -209,10 +211,10 @@ function TuneSection({ voice }: { voice: VoiceState }) {
           : "Desligado, não soma atraso nenhum."}
       </p>
       <p className="hint small">
-        O autotune acompanha o tom da música, mesmo transposta. Em velocidades baixas ele só corrige o
-        “centro” de cada nota e deixa o vibrato passar; em velocidades altas também achata a
-        oscilação lenta. Para o efeito “robô”, use Intensidade e Velocidade no máximo.
-        Funciona melhor com fones ou caixas longe do microfone.
+        O autotune acompanha o tom da música, mesmo transposta. Em velocidades baixas ele só corrige
+        o “centro” de cada nota e deixa o vibrato passar; em velocidades altas também achata a
+        oscilação lenta. Para o efeito “robô”, use Intensidade e Velocidade no máximo. Funciona
+        melhor com fones ou caixas longe do microfone.
       </p>
     </>
   );
@@ -330,6 +332,27 @@ function EffectsSection({ voice }: { voice: VoiceState }) {
   );
 }
 
+function LatencyReadout({ voice }: { voice: VoiceState }) {
+  const { settings: s, stats } = voice;
+  if (!stats) return null;
+  const known = stats.inputMs > 0 || stats.outputMs > 0;
+  const total = totalVoiceLatencyMs(stats);
+  const round = (n: number) => Math.round(n);
+  return (
+    <p className="hint small">
+      Latência estimada da voz: <strong>~{round(total)} ms</strong>
+      {known
+        ? ` (entrada ${round(stats.inputMs)} + app ${round(stats.bridgeMs)} + saída ${round(stats.outputMs)}${
+            stats.tuneMs > 0 ? ` + autotune ${round(stats.tuneMs)}` : ""
+          } + ar 3). Os valores de entrada e saída são os que o driver informa e podem ser otimistas.`
+        : `: só o atraso do app (~${round(stats.bridgeMs)} ms) é conhecido; o driver não informou os atrasos do dispositivo.`}
+      {s.latencyMode === "minimal" && stats.underruns > 0
+        ? " Houve falhas de áudio: volte para Equilibrado."
+        : ""}
+    </p>
+  );
+}
+
 function MicrophoneSection({ voice }: { voice: VoiceState }) {
   const { settings: s, mic, stats } = voice;
   const advice = s.singing ? levelAdvice(voice.peak) : null;
@@ -385,6 +408,22 @@ function MicrophoneSection({ voice }: { voice: VoiceState }) {
         </div>
       </div>
 
+      <div className="presets" role="group" aria-label="Latência da voz">
+        <span className="hint small">Latência</span>
+        {LATENCY_MODES.map((m) => (
+          <button
+            key={m.id}
+            type="button"
+            className={s.latencyMode === m.id ? "chip active" : "chip"}
+            aria-pressed={s.latencyMode === m.id}
+            title={m.hint}
+            onClick={() => voice.update({ latencyMode: m.id })}
+          >
+            {m.label}
+          </button>
+        ))}
+      </div>
+      {s.singing && stats && <LatencyReadout voice={voice} />}
       {s.singing ? (
         <p className="hint small">
           {mic ? `Microfone: ${mic.name}. ` : "Abrindo o microfone… "}

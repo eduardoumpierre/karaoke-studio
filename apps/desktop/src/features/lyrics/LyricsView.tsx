@@ -22,11 +22,13 @@ export function LyricsView({ player, state }: { player: PlayerState; state: Lyri
   const activeRef = useRef<HTMLLIElement>(null);
 
   const offset = lyrics?.offset_ms ?? 0;
+  // A posição do motor é a do que ele está entregando; você ouve isso um instante depois.
+  const latency = player.outputLatencyS;
   const lines = lyrics?.lines ?? [];
   const synced = Boolean(lyrics?.synced) && lines.length > 0;
   // Só redesenha quando a linha muda, não a cada aviso de posição.
   const current = usePositionSelector(player, (pos) =>
-    synced ? currentLineIndex(lines, pos, offset, LINE_LEAD_IN_S) : -1,
+    synced ? currentLineIndex(lines, pos - latency, offset, LINE_LEAD_IN_S) : -1,
   );
 
   useEffect(() => {
@@ -94,7 +96,7 @@ export function LyricsView({ player, state }: { player: PlayerState; state: Lyri
                   type="button"
                   className="lyric-seek"
                   title="Ir para este trecho"
-                  onClick={() => player.seek(lineStartSeconds(ln.time_ms, offset))}
+                  onClick={() => player.seek(lineStartSeconds(ln.time_ms, offset, latency))}
                 >
                   {lineLabel(ln.text)}
                 </button>

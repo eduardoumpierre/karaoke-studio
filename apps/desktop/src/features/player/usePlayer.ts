@@ -57,6 +57,8 @@ export interface PlayerState {
   shift: number;
   /** true enquanto o novo tom está sendo preparado. */
   shifting: boolean;
+  /** Atraso entre o motor tocar e você ouvir (s), informado pelo dispositivo de saída. */
+  outputLatencyS: number;
   /** Espaço ocupado pelos tons já gerados da música atual. */
   pitchCacheBytes: number;
   setShift: (semitones: number) => void;
@@ -85,6 +87,7 @@ export function usePlayer(api: Api, service: PlayerService): PlayerState {
   const [error, setError] = useState<string | null>(null);
   const [shift, setShiftState] = useState(0);
   const [shifting, setShifting] = useState(false);
+  const [outputLatencyS, setOutputLatencyS] = useState(0);
   const [pitchCacheBytes, setPitchCacheBytes] = useState(0);
   const queueRef = useRef(queue);
   queueRef.current = queue;
@@ -251,6 +254,10 @@ export function usePlayer(api: Api, service: PlayerService): PlayerState {
           setPlaying(e.playing);
           if (e.duration > 0) setDuration(e.duration);
           peaksStore.set([e.peakL, e.peakR]);
+        } else if (e.type === "latency") {
+          // só atualiza quando muda de verdade (evita redesenhar a cada medição)
+          const next = Math.round(e.outputMs) / 1000;
+          setOutputLatencyS((old) => (Math.abs(old - next) >= 0.003 ? next : old));
         } else if (e.type === "ended") {
           const { next: song } = advance(queueRef.current);
           if (song) void play(song);
@@ -280,6 +287,7 @@ export function usePlayer(api: Api, service: PlayerService): PlayerState {
     error,
     shift,
     shifting,
+    outputLatencyS,
     pitchCacheBytes,
     setShift,
     clearPitchCache,
