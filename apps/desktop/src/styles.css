@@ -507,48 +507,132 @@ button.chip.active {
   right: 0;
   bottom: 150px;
   z-index: 4;
-  max-height: 45vh;
+  max-height: 55vh;
   overflow: auto;
   margin: 0 auto;
-  max-width: 1040px;
-  padding: 14px 24px;
+  max-width: 560px;
+  padding: 16px;
   background: var(--card);
   border: 1px solid var(--border);
-  border-radius: 12px 12px 0 0;
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 20px;
-}
-
-.queue-panel h3 {
-  margin: 0 0 8px;
-  font-size: 0.95rem;
-}
-
-.queue-panel ol,
-.queue-panel ul {
-  margin: 0;
-  padding: 0;
-  list-style: none;
-}
-
-.queue-panel li,
-.queue-head {
+  border-radius: 16px;
+  box-shadow: 0 12px 32px rgb(0 0 0 / 35%);
   display: flex;
-  justify-content: space-between;
-  align-items: center;
-  gap: 8px;
-  padding: 3px 0;
+  flex-direction: column;
+  gap: 14px;
 }
 
-.queue-panel li span {
+.queue-now-card {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 12px 14px;
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--accent) 16%, transparent);
+  border: 1px solid color-mix(in srgb, var(--accent) 40%, transparent);
+}
+
+.queue-eyebrow {
+  color: var(--accent);
+  font-size: 0.7rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.queue-text {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.queue-text strong,
+.queue-text small {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.queue-now {
+.queue-text small {
+  color: var(--muted);
+}
+
+.queue-toolbar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+}
+
+.queue-list {
   margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.queue-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 10px;
+  border-radius: 10px;
+}
+
+.queue-row:hover {
+  background: color-mix(in srgb, var(--fg) 6%, transparent);
+}
+
+.queue-row .queue-text {
+  flex: 1;
+}
+
+.queue-index {
+  width: 1.4em;
+  color: var(--muted);
+  font-size: 0.8rem;
+  font-variant-numeric: tabular-nums;
+  text-align: center;
+}
+
+.queue-duration {
+  color: var(--muted);
+  font-size: 0.8rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.queue-actions {
+  opacity: 0.5;
+  transition: opacity 0.15s;
+}
+
+.queue-row:hover .queue-actions,
+.queue-row:focus-within .queue-actions {
+  opacity: 1;
+}
+
+button.icon-btn {
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--fg);
+  font-size: 0.8rem;
+}
+
+button.icon-btn:hover {
+  background: color-mix(in srgb, var(--fg) 12%, transparent);
+}
+
+.queue-empty {
+  margin: 0;
+  padding: 18px 0;
+  color: var(--muted);
+  font-size: 0.85rem;
+  text-align: center;
 }
 
 .modal-backdrop {
@@ -633,16 +717,123 @@ button.chip.active {
 }
 
 .lyrics {
+  position: relative;
   display: flex;
   flex-direction: column;
   gap: 12px;
 }
 
+.lyrics-settings {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  z-index: 5;
+}
+
+button.lyrics-gear {
+  width: 32px;
+  height: 32px;
+  font-size: 1rem;
+  color: var(--muted);
+}
+
+button.lyrics-gear:hover,
+button.lyrics-gear[aria-expanded="true"] {
+  color: var(--fg);
+}
+
+.lyrics-settings .lyrics-popover {
+  top: calc(100% + 6px);
+  bottom: auto;
+  right: 0;
+  width: 320px;
+}
+
+.setting {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 8px;
+  padding-bottom: 10px;
+  border-bottom: 1px solid var(--border);
+}
+
+.setting-label {
+  flex: 1;
+  color: var(--muted);
+}
+
+.stepper {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 2px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+}
+
+.stepper output {
+  min-width: 4.5em;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+}
+
+.setting-list {
+  display: flex;
+  flex-direction: column;
+}
+
+button.menu-item {
+  padding: 8px 10px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--fg);
+  font-size: 0.85rem;
+  text-align: left;
+}
+
+button.menu-item:hover {
+  background: color-mix(in srgb, var(--fg) 8%, transparent);
+}
+
+button.menu-item.danger {
+  color: var(--bad);
+}
+
+.lyrics-popover .popover-note {
+  margin-top: 8px;
+}
+
+.lyrics-popover button.back {
+  align-self: flex-start;
+  text-decoration: none;
+  color: var(--muted);
+}
+
+.lyrics-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  padding: 32px 0;
+}
+
+.lyrics-empty p {
+  margin: 0;
+}
+
+.lyrics-empty-actions {
+  display: flex;
+  gap: 8px;
+}
+
 .lyric-lines {
   list-style: none;
   margin: 0;
-  padding: 24px 8px;
-  max-height: 46vh;
+  padding: 32px 8px;
+  max-height: 60vh;
   overflow-y: auto;
   text-align: center;
   font-size: 1.15rem;
@@ -1212,4 +1403,189 @@ button.tasks-btn.open {
 .presets.wrap {
   flex-wrap: wrap;
   margin-top: 0.4rem;
+}
+
+/* "Portão": o checkbox herdava a largura dos sliders e ficava fora de alinhamento */
+.vol span input[type="checkbox"] {
+  width: auto;
+  margin: 0 4px 0 0;
+  vertical-align: middle;
+}
+
+.drawer-grid .vol span {
+  display: inline-flex;
+  align-items: center;
+}
+
+.drawer-grid .latency-row {
+  grid-column: 1 / -1;
+}
+
+.seg {
+  display: inline-flex;
+  padding: 2px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--fg) 5%, transparent);
+}
+
+button.seg-opt {
+  padding: 4px 14px;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 0.8rem;
+  transition:
+    background 0.15s,
+    color 0.15s;
+}
+
+button.seg-opt:hover {
+  color: var(--fg);
+}
+
+button.seg-opt.active {
+  background: var(--accent);
+  color: #fff;
+}
+
+.latency-info {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  margin-left: auto;
+}
+
+.latency-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 10px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--fg) 7%, transparent);
+  color: var(--fg);
+  font-size: 0.8rem;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.latency-badge::before {
+  content: "";
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--muted);
+}
+
+.latency-badge.good::before {
+  background: #3fb950;
+}
+
+.latency-badge.warn::before {
+  background: #d29922;
+}
+
+.latency-badge.bad::before {
+  background: #f85149;
+}
+
+button.info-btn {
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 50%;
+  background: transparent;
+  color: var(--muted);
+  font: italic 700 0.75rem serif;
+  line-height: 1;
+}
+
+button.info-btn:hover,
+button.info-btn[aria-expanded="true"] {
+  color: var(--fg);
+  border-color: var(--accent);
+}
+
+.popover {
+  position: absolute;
+  z-index: 20;
+  bottom: calc(100% + 8px);
+  right: -8px;
+  width: 260px;
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--card);
+  color: var(--fg);
+  font-size: 0.8rem;
+  line-height: 1.4;
+  box-shadow: 0 8px 24px rgb(0 0 0 / 35%);
+}
+
+.popover p {
+  margin: 0 0 8px;
+}
+
+.popover p:last-child {
+  margin-bottom: 0;
+}
+
+.popover-title {
+  font-weight: 600;
+}
+
+.popover-note {
+  color: var(--muted);
+  font-size: 0.75rem;
+}
+
+.popover-warn {
+  color: #d29922;
+}
+
+.breakdown {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 3px 12px;
+  margin: 0 0 8px;
+}
+
+.breakdown dt {
+  color: var(--muted);
+}
+
+.breakdown dd {
+  margin: 0;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.breakdown .total {
+  padding-top: 4px;
+  border-top: 1px solid var(--border);
+  color: var(--fg);
+  font-weight: 600;
+}
+
+.queue-toolbar button.link {
+  color: var(--muted);
+  font-size: 0.8rem;
+  text-decoration: none;
+}
+
+.queue-toolbar button.link:hover {
+  color: var(--fg);
+}
+
+/* Linha de avisos do microfone: altura fixa, para o layout não pular quando o aviso some */
+.mic-status {
+  margin: 0;
+  min-height: 1.4em;
+  color: var(--muted);
+  font-size: 0.8rem;
+  line-height: 1.4;
 }

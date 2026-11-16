@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import { keyLabel, NOTE_NAMES, type Mode } from "../analysis/logic";
 import { Meter, RangeRow, Slider } from "../player/controls";
@@ -332,30 +332,129 @@ function EffectsSection({ voice }: { voice: VoiceState }) {
   );
 }
 
-function LatencyReadout({ voice }: { voice: VoiceState }) {
-  const { settings: s, stats } = voice;
-  if (!stats) return null;
-  const known = stats.inputMs > 0 || stats.outputMs > 0;
-  const total = totalVoiceLatencyMs(stats);
+/** Modos de latência + estimativa em ms; os detalhes ficam num popover (ícone de informação). */
+function LatencyControl({ voice }: { voice: VoiceState }) {
+  const { settings: s, stats, mic } = voice;
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLSpanElement>(null);
+  useEffect(() => {
+    if (!open) return;
+    const onDown = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setOpen(false);
+    };
+    document.addEventListener("mousedown", onDown);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("mousedown", onDown);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [open]);
   const round = (n: number) => Math.round(n);
+  const known = !!stats && (stats.inputMs > 0 || stats.outputMs > 0);
+  const total = stats ? totalVoiceLatencyMs(stats) : 0;
+  const tone = !s.singing || !stats ? "idle" : total < 50 ? "good" : total < 90 ? "warn" : "bad";
   return (
-    <p className="hint small">
-      Latência estimada da voz: <strong>~{round(total)} ms</strong>
-      {known
-        ? ` (entrada ${round(stats.inputMs)} + app ${round(stats.bridgeMs)} + saída ${round(stats.outputMs)}${
-            stats.tuneMs > 0 ? ` + autotune ${round(stats.tuneMs)}` : ""
-          } + ar 3). Os valores de entrada e saída são os que o driver informa e podem ser otimistas.`
-        : `: só o atraso do app (~${round(stats.bridgeMs)} ms) é conhecido; o driver não informou os atrasos do dispositivo.`}
-      {s.latencyMode === "minimal" && stats.underruns > 0
-        ? " Houve falhas de áudio: volte para Equilibrado."
-        : ""}
-    </p>
+    <div className="vol latency-row" role="group" aria-label="Latência da voz">
+      <span>Latência</span>
+      <div className="seg" role="radiogroup" aria-label="Modo de latência">
+        {LATENCY_MODES.map((m) => (
+          <button
+            key={m.id}
+            type="button"
+            role="radio"
+            aria-checked={s.latencyMode === m.id}
+            className={s.latencyMode === m.id ? "seg-opt active" : "seg-opt"}
+            title={m.hint}
+            onClick={() => voice.update({ latencyMode: m.id })}
+          >
+            {m.label}
+          </button>
+        ))}
+      </div>
+      <span className="latency-info" ref={ref}>
+        <span className={`latency-badge ${tone}`} title="Latência estimada da voz">
+          {s.singing && stats ? `~${round(total)} ms` : "— ms"}
+        </span>
+        <button
+          type="button"
+          className="info-btn"
+          aria-label="Detalhes da latência"
+          aria-expanded={open}
+          onClick={() => setOpen((o) => !o)}
+        >
+          i
+        </button>
+        {open && (
+          <div className="popover" role="dialog" aria-label="Detalhes da latência">
+            {s.singing && stats ? (
+              <>
+                <p className="popover-title">Latência estimada da voz</p>
+                {known ? (
+                  <dl className="breakdown">
+                    <dt>Entrada</dt>
+                    <dd>{round(stats.inputMs)} ms</dd>
+                    <dt>App</dt>
+                    <dd>{round(stats.bridgeMs)} ms</dd>
+                    <dt>Saída</dt>
+                    <dd>{round(stats.outputMs)} ms</dd>
+                    {stats.tuneMs > 0 && (
+                      <>
+                        <dt>Autotune</dt>
+                        <dd>{round(stats.tuneMs)} ms</dd>
+                      </>
+                    )}
+                    <dt>Ar</dt>
+                    <dd>3 ms</dd>
+                    <dt className="total">Total</dt>
+                    <dd className="total">~{round(total)} ms</dd>
+                  </dl>
+                ) : (
+                  <p>
+                    Só o atraso do app (~{round(stats.bridgeMs)} ms) é conhecido; o driver não
+                    informou os atrasos do dispositivo.
+                  </p>
+                )}
+                <p className="popover-note">
+                  Entrada e saída vêm do driver e podem ser otimistas.
+                  {mic ? ` Microfone: ${mic.name}.` : ""}
+                </p>
+                {stats.underruns > 0 && (
+                  <p className="popover-warn">
+                    {stats.underruns} falha(s) de áudio.
+                    {s.latencyMode === "minimal" ? " Volte para Equilibrado." : ""}
+                  </p>
+                )}
+              </>
+            ) : (
+              <p>Clique em “Cantar” para medir a latência.</p>
+            )}
+          </div>
+        )}
+      </span>
+    </div>
   );
 }
 
+/** Mantém um aviso na tela por alguns segundos depois que ele some, para não ficar piscando. */
+function useHeldAdvice(advice: string | null, holdMs = 3000): string | null {
+  const [shown, setShown] = useState<string | null>(null);
+  useEffect(() => {
+    if (advice) {
+      setShown(advice);
+      return;
+    }
+    const t = setTimeout(() => setShown(null), holdMs);
+    return () => clearTimeout(t);
+  }, [advice, holdMs]);
+  return shown;
+}
+
 function MicrophoneSection({ voice }: { voice: VoiceState }) {
-  const { settings: s, mic, stats } = voice;
-  const advice = s.singing ? levelAdvice(voice.peak) : null;
+  const { settings: s } = voice;
+  const advice = useHeldAdvice(s.singing ? levelAdvice(voice.peak) : null);
   return (
     <>
       <div className="drawer-grid">
@@ -363,7 +462,7 @@ function MicrophoneSection({ voice }: { voice: VoiceState }) {
           label="Minha voz"
           value={s.volumePercent}
           onChange={(v) => voice.update({ volumePercent: v })}
-          hint="Volume da sua voz nas caixas"
+          hint="Volume da sua voz nas caixas. Se ouvir um apito (microfonia), diminua ou afaste o microfone das caixas."
         />
         <label className="vol">
           <span>Ganho do mic</span>
@@ -378,7 +477,10 @@ function MicrophoneSection({ voice }: { voice: VoiceState }) {
           />
           <output>{formatDb(s.gainDb)}</output>
         </label>
-        <label className="vol">
+        <label
+          className="vol"
+          title="O portão abafa o microfone quando você não está cantando. Se cortar o começo das palavras, deixe o limiar mais baixo."
+        >
           <span>
             <input
               type="checkbox"
@@ -406,40 +508,11 @@ function MicrophoneSection({ voice }: { voice: VoiceState }) {
             <Meter peak={s.singing ? meterLevel(voice.peak) : 0} />
           </div>
         </div>
+        <LatencyControl voice={voice} />
       </div>
 
-      <div className="presets" role="group" aria-label="Latência da voz">
-        <span className="hint small">Latência</span>
-        {LATENCY_MODES.map((m) => (
-          <button
-            key={m.id}
-            type="button"
-            className={s.latencyMode === m.id ? "chip active" : "chip"}
-            aria-pressed={s.latencyMode === m.id}
-            title={m.hint}
-            onClick={() => voice.update({ latencyMode: m.id })}
-          >
-            {m.label}
-          </button>
-        ))}
-      </div>
-      {s.singing && stats && <LatencyReadout voice={voice} />}
-      {s.singing ? (
-        <p className="hint small">
-          {mic ? `Microfone: ${mic.name}. ` : "Abrindo o microfone… "}
-          {stats
-            ? `Atraso do app: ~${Math.round(stats.bridgeMs)} ms, mais o do dispositivo de saída. `
-            : ""}
-          {stats && stats.underruns > 0 ? `(${stats.underruns} falha(s) de áudio) ` : ""}
-          {advice}
-        </p>
-      ) : (
-        <p className="hint small">Clique em “Cantar” para ligar o microfone.</p>
-      )}
-      <p className="hint small">
-        O portão abafa o microfone quando você não está cantando. Se cortar o começo das palavras,
-        deixe o limiar mais baixo. Se ouvir um apito (microfonia), diminua “Minha voz” ou afaste o
-        microfone das caixas.
+      <p className="mic-status" aria-live="polite">
+        {s.singing ? advice : "Clique em “Cantar” para ligar o microfone."}
       </p>
     </>
   );

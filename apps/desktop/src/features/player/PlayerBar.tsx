@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 
 import type { PlayerService } from "../../services/player";
-import type { Song } from "../library/format";
+import { formatDuration, type Song } from "../library/format";
 import { formatShift, keyLabel, MAX_SHIFT, transposeKey, type Mode } from "../analysis/logic";
 import { AudioSettings } from "./AudioSettings";
 import { Slider } from "./controls";
@@ -11,56 +11,122 @@ import { activePreset, PRESETS, type MixState } from "./logic";
 import { SeekBar } from "./SeekBar";
 import { usePeaks, type PlayerState } from "./usePlayer";
 
+function QueueRow({
+  song,
+  index,
+  actions,
+}: {
+  song: Song;
+  index?: number;
+  actions: React.ReactNode;
+}) {
+  return (
+    <li className="queue-row">
+      {index !== undefined && <span className="queue-index">{index + 1}</span>}
+      <div className="queue-text">
+        <strong>{song.title}</strong>
+        <small>{song.artist || "Artista desconhecido"}</small>
+      </div>
+      <span className="queue-duration">{formatDuration(song.duration_seconds)}</span>
+      <div className="queue-actions">{actions}</div>
+    </li>
+  );
+}
+
 function QueuePanel({ player }: { player: PlayerState }) {
   const { queue } = player;
-  const name = (s: Song) => `${s.title}${s.artist ? ` — ${s.artist}` : ""}`;
+  const [tab, setTab] = useState<"next" | "history">("next");
+  const history = queue.history.slice(0, 10);
   return (
-    <div className="queue-panel">
-      <section>
-        <h3>Tocando agora</h3>
-        <p className="queue-now">{queue.current ? name(queue.current) : "Nada tocando."}</p>
-      </section>
-      <section>
-        <div className="queue-head">
-          <h3>Próximas ({queue.queue.length})</h3>
-          {queue.queue.length > 0 && (
-            <button type="button" className="ghost" onClick={player.clearQueue}>
-              Limpar
-            </button>
-          )}
-        </div>
-        {queue.queue.length === 0 ? (
-          <p className="hint">A fila está vazia. Use “+” nas músicas da biblioteca.</p>
+    <div className="queue-panel" aria-label="Fila de músicas">
+      <div className="queue-now-card">
+        <span className="queue-eyebrow">Tocando agora</span>
+        {queue.current ? (
+          <div className="queue-text">
+            <strong>{queue.current.title}</strong>
+            <small>{queue.current.artist || "Artista desconhecido"}</small>
+          </div>
         ) : (
-          <ol>
+          <small>Nada tocando.</small>
+        )}
+      </div>
+
+      <div className="queue-toolbar">
+        <div className="seg" role="tablist" aria-label="Fila ou histórico">
+          <button
+            type="button"
+            role="tab"
+            aria-selected={tab === "next"}
+            className={tab === "next" ? "seg-opt active" : "seg-opt"}
+            onClick={() => setTab("next")}
+          >
+            Próximas · {queue.queue.length}
+          </button>
+          <button
+            type="button"
+            role="tab"
+            aria-selected={tab === "history"}
+            className={tab === "history" ? "seg-opt active" : "seg-opt"}
+            onClick={() => setTab("history")}
+          >
+            Histórico
+          </button>
+        </div>
+        {tab === "next" && queue.queue.length > 0 && (
+          <button type="button" className="link" onClick={player.clearQueue}>
+            Limpar fila
+          </button>
+        )}
+      </div>
+
+      {tab === "next" ? (
+        queue.queue.length === 0 ? (
+          <p className="queue-empty">A fila está vazia. Use “+ Fila” nas músicas da biblioteca.</p>
+        ) : (
+          <ol className="queue-list">
             {queue.queue.map((s, i) => (
-              <li key={s.id}>
-                <span>{name(s)}</span>
-                <button type="button" className="ghost" onClick={() => player.removeFromQueue(i)}>
-                  Tirar
-                </button>
-              </li>
+              <QueueRow
+                key={s.id}
+                song={s}
+                index={i}
+                actions={
+                  <button
+                    type="button"
+                    className="icon-btn"
+                    aria-label={`Tirar ${s.title} da fila`}
+                    title="Tirar da fila"
+                    onClick={() => player.removeFromQueue(i)}
+                  >
+                    ✕
+                  </button>
+                }
+              />
             ))}
           </ol>
-        )}
-      </section>
-      <section>
-        <h3>Histórico</h3>
-        {queue.history.length === 0 ? (
-          <p className="hint">Ainda não tocou nada.</p>
-        ) : (
-          <ul>
-            {queue.history.slice(0, 10).map((s) => (
-              <li key={s.id}>
-                <span>{name(s)}</span>
-                <button type="button" className="ghost" onClick={() => void player.play(s)}>
-                  Tocar
+        )
+      ) : history.length === 0 ? (
+        <p className="queue-empty">Ainda não tocou nada.</p>
+      ) : (
+        <ul className="queue-list">
+          {history.map((s) => (
+            <QueueRow
+              key={s.id}
+              song={s}
+              actions={
+                <button
+                  type="button"
+                  className="icon-btn"
+                  aria-label={`Tocar ${s.title}`}
+                  title="Tocar de novo"
+                  onClick={() => void player.play(s)}
+                >
+                  ▶
                 </button>
-              </li>
-            ))}
-          </ul>
-        )}
-      </section>
+              }
+            />
+          ))}
+        </ul>
+      )}
     </div>
   );
 }

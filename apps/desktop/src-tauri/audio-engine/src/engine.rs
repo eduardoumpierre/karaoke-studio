@@ -292,6 +292,8 @@ struct EngineThread {
     output_wanted: Option<Option<String>>,
     /// Modo de latência atual (`MODE_*`).
     latency_mode: u32,
+    /// Retorno pedido pela interface; vale de novo sempre que um microfone é (re)aberto.
+    monitor_wanted: bool,
     /// Filas de microfones já fechados; a memória é liberada aqui, nunca no callback.
     retired_rings: Vec<Arc<Ring>>,
     ticks: u32,
@@ -310,6 +312,7 @@ impl EngineThread {
             mic: None,
             output_wanted: None,
             latency_mode: 0,
+            monitor_wanted: false,
             retired_rings: Vec::new(),
             ticks: 0,
             last_state: None,
@@ -616,6 +619,7 @@ impl EngineThread {
         tune.scale_mask
             .store(v.tune_scale & crate::tune::CHROMATIC, Ordering::Relaxed);
         // O retorno só liga com o microfone aberto.
+        self.monitor_wanted = v.monitor;
         let on = v.monitor && self.mic.is_some();
         shared.monitor.store(on, Ordering::Relaxed);
     }
@@ -676,6 +680,11 @@ impl EngineThread {
             info.sample_rate,
             info.channels
         );
+        // `stop_mic` desligou o retorno: religa se a interface o pede (troca de microfone).
+        self.shared
+            .voice
+            .monitor
+            .store(self.monitor_wanted, Ordering::Relaxed);
         self.mic = Some(Mic {
             _stream: stream,
             peak,
