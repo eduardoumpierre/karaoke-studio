@@ -1,0 +1,33 @@
+﻿# Node
+node_modules/
+dist/
+
+# Rust / Tauri
+target/
+src-tauri/gen/
+
+# Python
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+
+# Dados locais do app
+data/
+*.sqlite
+*.sqlite3
+*.log
+
+# Modelos e audio de teste
+models/
+*.wav
+*.flac
+*.mp3
+
+# Editor / SO
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+.env
