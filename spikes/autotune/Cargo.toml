@@ -1,0 +1,10 @@
+[package]
+name = "spike-autotune"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+hound = "3.5"
+
+[profile.release]
+opt-level = 3

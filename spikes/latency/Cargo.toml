@@ -1,0 +1,11 @@
+[package]
+name = "spike-latency"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+cpal = "0.15"
+anyhow = "1"
+
+[profile.release]
+opt-level = 3

@@ -1,0 +1,10 @@
+packages:
+  - "apps/*"
+  - "packages/*"
+
+# esbuild (usado pelo Vite) precisa rodar o script de instalação.
+# `allowBuilds` é o formato do pnpm 11; `onlyBuiltDependencies`, o do pnpm 10.
+allowBuilds:
+  esbuild: true
+onlyBuiltDependencies:
+  - esbuild

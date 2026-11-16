@@ -1,14 +1,15 @@
 """Spike Demucs (Fase 0) - mede tempo e consistencia da separacao vocal/instrumental.
 
-Uso (dentro de spikes/demucs, com o ambiente do SPIKE-DEMUCS.md ativo):
+Uso (dentro de spikes/demucs):
     uv run python spike_demucs.py caminho\\musica1.mp3 caminho\\musica2.flac
     uv run python spike_demucs.py musica.mp3 --device cpu     # para comparar com a CPU
 
 Para cada musica:
   - roda o htdemucs com --two-stems=vocals (vocals + no_vocals)
-  - mede o tempo de processamento
+  - mede o tempo de processamento (modelo ja baixado: rode duas vezes)
   - confere duracao e taxa de amostragem
-  - confere se vocals + no_vocals reconstroi o original (residuo em dB)
+  - converte o original para a taxa das stems (via ffmpeg) e confere se
+    vocals + no_vocals reconstroi o original, medindo tambem o atraso (lag) entre eles
 """
 
 import argparse
@@ -38,31 +39,82 @@ def run_demucs(track: Path, device: str) -> float:
     return time.perf_counter() - start
 
 
+def resample_with_ffmpeg(track: Path, sr: int) -> np.ndarray:
+    tmp = OUT_DIR / f"_{track.stem}_{sr}.wav"
+    subprocess.run(
+        ["ffmpeg", "-y", "-loglevel", "error", "-i", str(track),
+         "-ar", str(sr), "-c:a", "pcm_f32le", str(tmp)],
+        check=True,
+    )
+    data, _ = sf.read(tmp, dtype="float32", always_2d=True)
+    tmp.unlink(missing_ok=True)
+    return data
+
+
+def best_lag(ref: np.ndarray, rec: np.ndarray, sr: int, frac: float = 0.25,
+             max_lag: int = 4000) -> int:
+    """Atraso (em amostras) que melhor alinha rec com ref, medido numa janela de 20 s
+    que comeca em `frac` da musica. Positivo: rec esta adiantado; negativo: atrasado."""
+    n = min(len(ref), len(rec))
+    start = int(n * frac)
+    length = min(sr * 20, n - start)
+    a = ref[start:start + length].mean(axis=1)
+    b = rec[start:start + length].mean(axis=1)
+    size = 1 << (len(a) + len(b)).bit_length()
+    corr = np.fft.irfft(np.fft.rfft(a, size) * np.conj(np.fft.rfft(b, size)), size)
+    lags = np.concatenate([np.arange(0, max_lag + 1), np.arange(-max_lag, 0)])
+    vals = np.concatenate([corr[:max_lag + 1], corr[-max_lag:]])
+    return int(lags[int(np.argmax(vals))])
+
+
+def residual_db(ref: np.ndarray, rec: np.ndarray) -> float:
+    rms_ref = float(np.sqrt(np.mean(ref ** 2))) or 1e-12
+    rms_res = float(np.sqrt(np.mean((ref - rec) ** 2))) or 1e-12
+    return 20 * np.log10(rms_res / rms_ref)
+
+
 def analyse(track: Path) -> None:
     stem_dir = OUT_DIR / "htdemucs" / track.stem
     vocals, sr_v = sf.read(stem_dir / "vocals.wav", dtype="float32", always_2d=True)
     inst, sr_i = sf.read(stem_dir / "no_vocals.wav", dtype="float32", always_2d=True)
-    orig, sr_o = sf.read(track, dtype="float32", always_2d=True)
+    info = sf.info(track)
+    sr_o = info.samplerate
 
     print(f"  taxa original: {sr_o} Hz | stems: {sr_v} Hz")
-    print(f"  duracao original: {len(orig) / sr_o:.2f}s | vocals: {len(vocals) / sr_v:.2f}s | "
-          f"instrumental: {len(inst) / sr_i:.2f}s")
+    print(f"  duracao original: {info.frames / sr_o:.3f}s | vocals: {len(vocals) / sr_v:.3f}s | "
+          f"instrumental: {len(inst) / sr_i:.3f}s")
     print(f"  amostras vocals vs instrumental: {len(vocals)} vs {len(inst)} "
           f"({'iguais' if len(vocals) == len(inst) else 'DIFERENTES'})")
 
-    if sr_o != sr_v:
-        print("  (taxa diferente do original: pulando teste de reconstrucao)")
-        return
+    if sr_o == sr_v:
+        orig, _ = sf.read(track, dtype="float32", always_2d=True)
+    else:
+        print(f"  convertendo o original para {sr_v} Hz com ffmpeg para comparar...")
+        orig = resample_with_ffmpeg(track, sr_v)
 
     n = min(len(orig), len(vocals), len(inst))
     channels = min(orig.shape[1], vocals.shape[1], inst.shape[1])
-    recon = vocals[:n, :channels] + inst[:n, :channels]
     ref = orig[:n, :channels]
-    resid = ref - recon
-    rms_ref = float(np.sqrt(np.mean(ref ** 2))) or 1e-12
-    rms_res = float(np.sqrt(np.mean(resid ** 2))) or 1e-12
-    print(f"  residuo da reconstrucao: {20 * np.log10(rms_res / rms_ref):.1f} dB "
-          f"(quanto mais negativo, melhor)")
+    rec = vocals[:n, :channels] + inst[:n, :channels]
+
+    print(f"  residuo sem alinhamento: {residual_db(ref, rec):.1f} dB")
+
+    fracs = (0.05, 0.5, 0.9)
+    lags = [best_lag(ref, rec, sr_v, f) for f in fracs]
+    print("  atraso por posicao: " + " | ".join(
+        f"{int(f * 100)}%: {lg} amostras ({1000 * lg / sr_v:.2f} ms)" for f, lg in zip(fracs, lags)))
+    print(f"  variacao entre inicio e fim: {max(lags) - min(lags)} amostras "
+          f"({'constante' if max(lags) - min(lags) <= 2 else 'HA DERIVA'})")
+    lag = lags[1]
+    if lag > 0:
+        ref_a, rec_a = ref[lag:], rec[:len(rec) - lag]
+    elif lag < 0:
+        ref_a, rec_a = ref[:len(ref) + lag], rec[-lag:]
+    else:
+        ref_a, rec_a = ref, rec
+    print(f"  atraso detectado entre original e stems: {lag} amostras ({1000 * lag / sr_v:.2f} ms)")
+    print(f"  residuo apos alinhar: {residual_db(ref_a, rec_a):.1f} dB "
+          f"(quanto mais negativo, melhor; perto de -25 dB e comum em separadores neurais)")
 
 
 def main() -> None:
