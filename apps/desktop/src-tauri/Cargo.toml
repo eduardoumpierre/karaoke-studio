@@ -14,7 +14,17 @@ tauri-build = { version = "2", features = [] }
 [dependencies]
 tauri = { version = "2", features = [] }
 tauri-plugin-log = "2"
+tauri-plugin-dialog = "2"
 log = "0.4"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 rand = "0.8"
+audio-engine = { path = "audio-engine" }
+
+# Em `tauri dev` (perfil dev) o Rust sem otimização é lento demais para decodificar e reamostrar
+# música: otimiza as dependências e o motor de áudio mesmo em dev.
+[profile.dev.package."*"]
+opt-level = 3
+
+[profile.dev.package.audio-engine]
+opt-level = 3

@@ -1,0 +1,528 @@
+//! A thread do motor: é dona dos dispositivos cpal (os `Stream` não podem mudar de thread) e
+//! recebe comandos por um canal. Quem chama usa o `Engine`, que é só um "controle remoto".
+
+use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
+use std::sync::Arc;
+use std::time::Duration;
+
+use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
+use cpal::{FromSample, Sample, SampleFormat, SizedSample, Stream};
+use serde::Serialize;
+
+use crate::playback::{Loaded, Mix, Playback, Shared};
+
+/// Intervalo dos eventos de estado para a interface (~30 Hz).
+const TICK: Duration = Duration::from_millis(33);
+
+#[derive(Clone, Debug, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct DeviceInfo {
+    pub name: String,
+    pub is_default: bool,
+}
+
+#[derive(Clone, Debug, Serialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct DeviceList {
+    pub outputs: Vec<DeviceInfo>,
+    pub inputs: Vec<DeviceInfo>,
+}
+
+#[derive(Clone, Debug, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct OutputInfo {
+    pub name: String,
+    pub sample_rate: u32,
+    pub channels: u16,
+}
+
+/// Eventos enviados à interface.
+#[derive(Clone, Debug, Serialize, PartialEq)]
+#[serde(tag = "type", rename_all = "camelCase")]
+pub enum Event {
+    #[serde(rename_all = "camelCase")]
+    State {
+        position: f64,
+        duration: f64,
+        playing: bool,
+        peak_l: f32,
+        peak_r: f32,
+    },
+    Ended,
+    Error {
+        message: String,
+    },
+    #[serde(rename_all = "camelCase")]
+    MicLevel {
+        peak: f32,
+    },
+}
+
+type Reply<T> = Sender<Result<T, String>>;
+
+enum Cmd {
+    ListDevices(Reply<DeviceList>),
+    SetOutput(Option<String>, Reply<OutputInfo>),
+    OutputInfo(Sender<Option<OutputInfo>>),
+    Install {
+        loaded: Arc<Loaded>,
+        start_secs: f64,
+        autoplay: bool,
+        reply: Reply<()>,
+    },
+    Play,
+    Pause,
+    Seek(f64),
+    SetMix(Mix),
+    Position(Sender<(f64, bool)>),
+    StartMic(Option<String>, Reply<String>),
+    StopMic,
+    StreamError(String),
+    Shutdown,
+}
+
+/// Controle remoto do motor (pode ser clonado entre threads).
+#[derive(Clone)]
+pub struct Engine {
+    tx: Sender<Cmd>,
+}
+
+impl Engine {
+    /// Inicia a thread do motor. `on_event` é chamado de dentro dela (deve ser rápido).
+    pub fn start(on_event: impl Fn(Event) + Send + 'static) -> Engine {
+        let (tx, rx) = mpsc::channel();
+        let tx_thread = tx.clone();
+        std::thread::Builder::new()
+            .name("audio-engine".into())
+            .spawn(move || EngineThread::new(tx_thread, Box::new(on_event)).run(rx))
+            .expect("thread do motor de áudio");
+        Engine { tx }
+    }
+
+    fn ask<T>(&self, make: impl FnOnce(Sender<T>) -> Cmd) -> Result<T, String> {
+        let (reply, rx) = mpsc::channel();
+        self.tx
+            .send(make(reply))
+            .map_err(|_| "o motor de áudio parou".to_string())?;
+        rx.recv_timeout(Duration::from_secs(20))
+            .map_err(|_| "o motor de áudio não respondeu".to_string())
+    }
+
+    pub fn list_devices(&self) -> Result<DeviceList, String> {
+        self.ask(Cmd::ListDevices)?
+    }
+
+    /// `None` = dispositivo padrão do sistema.
+    pub fn set_output(&self, name: Option<String>) -> Result<OutputInfo, String> {
+        self.ask(|r| Cmd::SetOutput(name, r))?
+    }
+
+    pub fn output_info(&self) -> Option<OutputInfo> {
+        self.ask(Cmd::OutputInfo).ok().flatten()
+    }
+
+    /// Entrega uma música já na taxa da saída. Com `autoplay`, começa a tocar.
+    pub fn install(
+        &self,
+        loaded: Arc<Loaded>,
+        start_secs: f64,
+        autoplay: bool,
+    ) -> Result<(), String> {
+        self.ask(|reply| Cmd::Install {
+            loaded,
+            start_secs,
+            autoplay,
+            reply,
+        })?
+    }
+
+    pub fn play(&self) {
+        let _ = self.tx.send(Cmd::Play);
+    }
+    pub fn pause(&self) {
+        let _ = self.tx.send(Cmd::Pause);
+    }
+    pub fn seek(&self, secs: f64) {
+        let _ = self.tx.send(Cmd::Seek(secs));
+    }
+    pub fn set_mix(&self, mix: Mix) {
+        let _ = self.tx.send(Cmd::SetMix(mix));
+    }
+
+    /// (posição em segundos, está tocando)
+    pub fn position(&self) -> (f64, bool) {
+        self.ask(Cmd::Position).unwrap_or((0.0, false))
+    }
+
+    /// Abre o microfone só para medir o nível (sem tocar nada). Devolve o nome do dispositivo.
+    pub fn start_mic_test(&self, name: Option<String>) -> Result<String, String> {
+        self.ask(|r| Cmd::StartMic(name, r))?
+    }
+    pub fn stop_mic_test(&self) {
+        let _ = self.tx.send(Cmd::StopMic);
+    }
+
+    pub fn shutdown(&self) {
+        let _ = self.tx.send(Cmd::Shutdown);
+    }
+}
+
+struct EngineThread {
+    tx: Sender<Cmd>,
+    on_event: Box<dyn Fn(Event) + Send>,
+    shared: Arc<Shared>,
+    output: Option<(Stream, OutputInfo)>,
+    /// Música atual (para a duração) — o callback guarda a própria referência.
+    loaded: Option<Arc<Loaded>>,
+    /// Músicas já trocadas; a memória é liberada aqui, nunca no callback de áudio.
+    retired: Vec<Arc<Loaded>>,
+    mic: Option<(Stream, Arc<AtomicU32>)>,
+    last_state: Option<Event>,
+}
+
+impl EngineThread {
+    fn new(tx: Sender<Cmd>, on_event: Box<dyn Fn(Event) + Send>) -> Self {
+        EngineThread {
+            tx,
+            on_event,
+            shared: Shared::new(Mix::default()),
+            output: None,
+            loaded: None,
+            retired: Vec::new(),
+            mic: None,
+            last_state: None,
+        }
+    }
+
+    fn run(mut self, rx: Receiver<Cmd>) {
+        // Saída padrão desde o início; se falhar, o erro aparece quando alguém tentar tocar.
+        if let Err(e) = self.set_output(None) {
+            log::warn!("saída de áudio indisponível: {e}");
+        }
+        loop {
+            match rx.recv_timeout(TICK) {
+                Ok(Cmd::Shutdown) | Err(RecvTimeoutError::Disconnected) => break,
+                Ok(cmd) => self.handle(cmd),
+                Err(RecvTimeoutError::Timeout) => {}
+            }
+            self.tick();
+        }
+    }
+
+    fn emit(&self, e: Event) {
+        (self.on_event)(e);
+    }
+
+    fn handle(&mut self, cmd: Cmd) {
+        match cmd {
+            Cmd::ListDevices(r) => {
+                let _ = r.send(list_devices());
+            }
+            Cmd::SetOutput(name, r) => {
+                let _ = r.send(self.set_output(name));
+            }
+            Cmd::OutputInfo(r) => {
+                let _ = r.send(self.output.as_ref().map(|(_, i)| i.clone()));
+            }
+            Cmd::Install {
+                loaded,
+                start_secs,
+                autoplay,
+                reply,
+            } => {
+                let _ = reply.send(self.install(loaded, start_secs, autoplay));
+            }
+            Cmd::Play => {
+                if self.loaded.is_some() {
+                    self.shared.playing.store(true, Ordering::Release);
+                }
+            }
+            Cmd::Pause => self.shared.playing.store(false, Ordering::Release),
+            Cmd::Seek(secs) => {
+                if let Some(l) = &self.loaded {
+                    let frame = (secs.max(0.0) * l.rate as f64) as usize;
+                    self.shared.request_seek(frame.min(l.frames));
+                }
+            }
+            Cmd::SetMix(mix) => self.shared.set_mix(mix),
+            Cmd::Position(r) => {
+                let _ = r.send(self.position());
+            }
+            Cmd::StartMic(name, r) => {
+                let _ = r.send(self.start_mic(name));
+            }
+            Cmd::StopMic => self.mic = None,
+            Cmd::StreamError(message) => {
+                log::error!("erro no dispositivo de áudio: {message}");
+                self.shared.playing.store(false, Ordering::Release);
+                self.emit(Event::Error { message });
+            }
+            Cmd::Shutdown => {}
+        }
+    }
+
+    fn position(&self) -> (f64, bool) {
+        let rate = self.output.as_ref().map_or(44_100, |(_, i)| i.sample_rate) as f64;
+        (
+            self.shared.position.load(Ordering::Relaxed) as f64 / rate,
+            self.shared.playing.load(Ordering::Acquire),
+        )
+    }
+
+    fn tick(&mut self) {
+        self.retired.retain(|a| Arc::strong_count(a) > 1);
+        if self.shared.ended.swap(false, Ordering::AcqRel) {
+            self.emit(Event::Ended);
+        }
+        if let Some((_, peak)) = &self.mic {
+            let p = f32::from_bits(peak.swap(0, Ordering::Relaxed));
+            self.emit(Event::MicLevel { peak: p });
+        }
+        let (position, playing) = self.position();
+        let (peak_l, peak_r) = self.shared.take_peaks();
+        let duration = self.loaded.as_ref().map_or(0.0, |l| l.duration_secs());
+        let state = Event::State {
+            position,
+            duration,
+            playing,
+            peak_l,
+            peak_r,
+        };
+        // Parado e sem mudança: não precisa avisar a interface a cada 33 ms.
+        let quiet = |e: &Event| match e {
+            Event::State {
+                position,
+                duration,
+                playing,
+                peak_l,
+                peak_r,
+            } => (
+                *position,
+                *duration,
+                *playing,
+                *peak_l > 0.0 || *peak_r > 0.0,
+            ),
+            _ => (0.0, 0.0, false, false),
+        };
+        if self.last_state.as_ref().map(quiet) != Some(quiet(&state))
+            || playing
+            || peak_l > 0.0
+            || peak_r > 0.0
+        {
+            self.emit(state.clone());
+        }
+        self.last_state = Some(state);
+    }
+
+    fn install(
+        &mut self,
+        loaded: Arc<Loaded>,
+        start_secs: f64,
+        autoplay: bool,
+    ) -> Result<(), String> {
+        let rate = self
+            .output
+            .as_ref()
+            .map(|(_, i)| i.sample_rate)
+            .ok_or("nenhum dispositivo de saída disponível")?;
+        if loaded.rate != rate {
+            return Err(format!(
+                "a música está em {} Hz, mas a saída usa {rate} Hz (recarregue a música)",
+                loaded.rate
+            ));
+        }
+        let start = ((start_secs.max(0.0) * rate as f64) as usize).min(loaded.frames);
+        if let Some(old) = self.loaded.replace(loaded.clone()) {
+            self.retired.push(old);
+        }
+        self.shared.ended.store(false, Ordering::Release);
+        self.shared.playing.store(autoplay, Ordering::Release);
+        self.shared.install(loaded, start);
+        Ok(())
+    }
+
+    fn set_output(&mut self, name: Option<String>) -> Result<OutputInfo, String> {
+        let was_playing = self.shared.playing.swap(false, Ordering::AcqRel);
+        self.output = None; // fecha o dispositivo anterior primeiro (o modo exclusivo exige)
+        let _ = was_playing;
+        let host = cpal::default_host();
+        let device = match &name {
+            Some(n) => host
+                .output_devices()
+                .map_err(|e| e.to_string())?
+                .find(|d| d.name().map_or(false, |dn| &dn == n))
+                .ok_or_else(|| format!("dispositivo de saída não encontrado: {n}"))?,
+            None => host
+                .default_output_device()
+                .ok_or("nenhum dispositivo de saída padrão")?,
+        };
+        let config = device.default_output_config().map_err(|e| e.to_string())?;
+        let info = OutputInfo {
+            name: device.name().unwrap_or_else(|_| "(sem nome)".into()),
+            sample_rate: config.sample_rate().0,
+            channels: config.channels(),
+        };
+        // Música já carregada tem a taxa antiga: quem chamou precisa recarregá-la.
+        if let Some(old) = self.loaded.take() {
+            self.retired.push(old);
+        }
+        self.shared.position.store(0, Ordering::Relaxed);
+        self.shared.seek_to.store(-1, Ordering::Release);
+        let playback = Playback::new(self.shared.clone(), info.sample_rate);
+        let stream = match config.sample_format() {
+            SampleFormat::F32 => {
+                build_output::<f32>(&device, &config.into(), playback, self.tx.clone())
+            }
+            SampleFormat::I16 => {
+                build_output::<i16>(&device, &config.into(), playback, self.tx.clone())
+            }
+            SampleFormat::U16 => {
+                build_output::<u16>(&device, &config.into(), playback, self.tx.clone())
+            }
+            SampleFormat::I32 => {
+                build_output::<i32>(&device, &config.into(), playback, self.tx.clone())
+            }
+            other => Err(format!("formato de amostra não suportado: {other:?}")),
+        }?;
+        stream
+            .play()
+            .map_err(|e| format!("não foi possível iniciar a saída: {e}"))?;
+        self.output = Some((stream, info.clone()));
+        log::info!(
+            "saída de áudio: {} ({} Hz, {} canais)",
+            info.name,
+            info.sample_rate,
+            info.channels
+        );
+        Ok(info)
+    }
+
+    fn start_mic(&mut self, name: Option<String>) -> Result<String, String> {
+        self.mic = None;
+        let host = cpal::default_host();
+        let device = match &name {
+            Some(n) => host
+                .input_devices()
+                .map_err(|e| e.to_string())?
+                .find(|d| d.name().map_or(false, |dn| &dn == n))
+                .ok_or_else(|| format!("dispositivo de entrada não encontrado: {n}"))?,
+            None => host
+                .default_input_device()
+                .ok_or("nenhum microfone padrão")?,
+        };
+        let config = device.default_input_config().map_err(|e| e.to_string())?;
+        let peak = Arc::new(AtomicU32::new(0));
+        let stream = match config.sample_format() {
+            SampleFormat::F32 => build_input::<f32>(
+                &device,
+                &config.clone().into(),
+                peak.clone(),
+                self.tx.clone(),
+            ),
+            SampleFormat::I16 => build_input::<i16>(
+                &device,
+                &config.clone().into(),
+                peak.clone(),
+                self.tx.clone(),
+            ),
+            SampleFormat::U16 => build_input::<u16>(
+                &device,
+                &config.clone().into(),
+                peak.clone(),
+                self.tx.clone(),
+            ),
+            SampleFormat::I32 => build_input::<i32>(
+                &device,
+                &config.clone().into(),
+                peak.clone(),
+                self.tx.clone(),
+            ),
+            other => Err(format!("formato de amostra não suportado: {other:?}")),
+        }?;
+        stream
+            .play()
+            .map_err(|e| format!("não foi possível abrir o microfone: {e}"))?;
+        let used = device.name().unwrap_or_else(|_| "(sem nome)".into());
+        self.mic = Some((stream, peak));
+        Ok(used)
+    }
+}
+
+fn build_output<T>(
+    device: &cpal::Device,
+    config: &cpal::StreamConfig,
+    mut playback: Playback,
+    errors: Sender<Cmd>,
+) -> Result<Stream, String>
+where
+    T: SizedSample + FromSample<f32> + Sample,
+{
+    let channels = config.channels as usize;
+    device
+        .build_output_stream(
+            config,
+            move |data: &mut [T], _| playback.render(data, channels),
+            move |e| {
+                let _ = errors.send(Cmd::StreamError(e.to_string()));
+            },
+            None,
+        )
+        .map_err(|e| format!("não foi possível abrir a saída: {e}"))
+}
+
+fn build_input<T>(
+    device: &cpal::Device,
+    config: &cpal::StreamConfig,
+    peak: Arc<AtomicU32>,
+    errors: Sender<Cmd>,
+) -> Result<Stream, String>
+where
+    T: SizedSample,
+    f32: FromSample<T>,
+{
+    device
+        .build_input_stream(
+            config,
+            move |data: &[T], _| {
+                let mut p = 0.0f32;
+                for &s in data {
+                    p = p.max(f32::from_sample(s).abs());
+                }
+                peak.fetch_max(p.to_bits(), Ordering::Relaxed);
+            },
+            move |e| {
+                let _ = errors.send(Cmd::StreamError(e.to_string()));
+            },
+            None,
+        )
+        .map_err(|e| format!("não foi possível abrir o microfone: {e}"))
+}
+
+fn list_devices() -> Result<DeviceList, String> {
+    let host = cpal::default_host();
+    let default_out = host.default_output_device().and_then(|d| d.name().ok());
+    let default_in = host.default_input_device().and_then(|d| d.name().ok());
+    let collect = |devices: Vec<cpal::Device>, default: &Option<String>| -> Vec<DeviceInfo> {
+        let mut list: Vec<DeviceInfo> = devices
+            .iter()
+            .filter_map(|d| d.name().ok())
+            .map(|name| DeviceInfo {
+                is_default: Some(&name) == default.as_ref(),
+                name,
+            })
+            .collect();
+        list.dedup_by(|a, b| a.name == b.name);
+        list
+    };
+    Ok(DeviceList {
+        outputs: collect(
+            host.output_devices().map_err(|e| e.to_string())?.collect(),
+            &default_out,
+        ),
+        inputs: collect(
+            host.input_devices().map_err(|e| e.to_string())?.collect(),
+            &default_in,
+        ),
+    })
+}

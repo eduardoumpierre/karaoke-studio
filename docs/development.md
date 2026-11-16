@@ -10,9 +10,13 @@ Git, Node LTS, pnpm, Rust (rustup, com as Build Tools do Visual Studio C++), uv,
 cd C:\Users\umpie\projects\karaoke-studio
 pnpm install
 cd services\music-engine
-uv sync
+uv sync --group ml     # inclui PyTorch + Demucs (vários GB; só a primeira vez)
 cd ..\..
 ```
+
+Sem o grupo `ml` o app funciona, mas o botão "Separar voz" avisa que o Demucs não está instalado.
+Depois de `uv sync --group ml`, um `uv sync` simples remove o PyTorch; use sempre `--group ml` neste PC.
+Na primeira separação o modelo (~80 MB) é baixado para `%LOCALAPPDATA%\dev.karaokestudio.app\models`.
 
 ## Rodar o app completo (Tauri + backend)
 
@@ -46,8 +50,10 @@ pnpm dev     # abra http://127.0.0.1:1420
 
 ```powershell
 pnpm typecheck; pnpm test; pnpm lint; pnpm format:check      # UI
-cd services\music-engine; uv run pytest; uv run ruff check .; uv run ruff format --check .
+cd services\music-engine; uv run pytest; uv run pytest tests/test_demucs_real.py -s   # este precisa do grupo ml
+cd services\music-engine; uv run ruff check .; uv run ruff format --check .
 cd ..\..\apps\desktop\src-tauri; cargo test; cargo fmt --check
+cd audio-engine; cargo test; cargo fmt --check   # motor de áudio (sem Tauri; roda rápido)
 ```
 
 ## Tipos da API

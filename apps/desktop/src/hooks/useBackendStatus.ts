@@ -12,6 +12,8 @@ import {
 
 type Api = ReturnType<typeof createApi>;
 
+export type BackendStatus = { state: BackendState; retry: () => void; api: Api | null };
+
 async function check(api: Api): Promise<CheckResult> {
   try {
     const { data, error } = await api.GET("/health");
@@ -23,9 +25,10 @@ async function check(api: Api): Promise<CheckResult> {
 }
 
 /** Consulta o /health do backend até conectar e depois a cada poucos segundos. */
-export function useBackendStatus(): { state: BackendState; retry: () => void } {
+export function useBackendStatus(): BackendStatus {
   const [state, setState] = useState<BackendState>(INITIAL_STATE);
   const [round, setRound] = useState(0);
+  const [api, setApi] = useState<Api | null>(null);
   const stateRef = useRef<BackendState>(INITIAL_STATE);
 
   const apply = useCallback((result: CheckResult) => {
@@ -38,6 +41,7 @@ export function useBackendStatus(): { state: BackendState; retry: () => void } {
     let timer: ReturnType<typeof setTimeout> | undefined;
     stateRef.current = INITIAL_STATE;
     setState(INITIAL_STATE);
+    setApi(null);
 
     const loop = async (api: Api | null) => {
       let current = api;
@@ -45,6 +49,7 @@ export function useBackendStatus(): { state: BackendState; retry: () => void } {
         try {
           const cfg = await getBackendConfig();
           current = createApi(cfg.baseUrl, cfg.token);
+          if (!cancelled) setApi(current);
         } catch (e) {
           apply({ ok: false, message: e instanceof Error ? e.message : String(e) });
         }
@@ -60,5 +65,5 @@ export function useBackendStatus(): { state: BackendState; retry: () => void } {
     };
   }, [apply, round]);
 
-  return { state, retry: () => setRound((r) => r + 1) };
+  return { state, retry: () => setRound((r) => r + 1), api };
 }

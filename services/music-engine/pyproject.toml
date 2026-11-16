@@ -14,6 +14,25 @@ dev = [
     "pytest>=8",
     "ruff>=0.7",
 ]
+# Separação por IA (pesado: PyTorch + CUDA, vários GB). Instale com: uv sync --group ml
+# O CI e os testes não precisam dele (usam um separador falso).
+ml = [
+    "torch==2.5.1",
+    "torchaudio==2.5.1",
+    "demucs",
+    "soundfile",
+    "numpy",
+]
+
+# Windows e Linux: PyTorch com CUDA 12.4. macOS: PyTorch do PyPI (tem MPS no Apple Silicon).
+[tool.uv.sources]
+torch = [{ index = "pytorch-cu124", marker = "sys_platform == 'win32' or sys_platform == 'linux'" }]
+torchaudio = [{ index = "pytorch-cu124", marker = "sys_platform == 'win32' or sys_platform == 'linux'" }]
+
+[[tool.uv.index]]
+name = "pytorch-cu124"
+url = "https://download.pytorch.org/whl/cu124"
+explicit = true
 
 [build-system]
 requires = ["hatchling"]

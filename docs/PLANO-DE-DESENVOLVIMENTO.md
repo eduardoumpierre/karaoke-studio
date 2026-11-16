@@ -129,46 +129,54 @@ Notas da fase: o pnpm do PC é a versão 11 (política de idade mínima de pacot
 
 ### Fase 2 — Importação e biblioteca (Sprint 2)
 
-- [ ] SQLite com migrações (esquema: músicas, jobs, configurações).
-- [ ] Importar MP3, WAV, FLAC (seletor de arquivos nativo + arrastar e soltar).
-- [ ] Extrair metadados (mutagen/ffprobe): título, artista, duração, formato, taxa de amostragem, canais.
-- [ ] Copiar/registrar arquivos na pasta de dados do app; detectar duplicatas por hash.
-- [ ] Tela de biblioteca: lista, busca por título/artista, status, remoção.
-- [ ] Testes de importação com arquivos de exemplo (incluindo arquivo corrompido).
+- [x] SQLite com migrações (esquema: músicas, jobs, configurações).
+- [x] Importar MP3, WAV, FLAC (seletor de arquivos nativo + arrastar e soltar). *(backend testado; seletor e arrastar dependem de teste na janela do Tauri)*
+- [x] Extrair metadados (mutagen/ffprobe): título, artista, duração, formato, taxa de amostragem, canais.
+- [x] Copiar/registrar arquivos na pasta de dados do app; detectar duplicatas por hash.
+- [x] Tela de biblioteca: lista, busca por título/artista, status, remoção.
+- [x] Testes de importação com arquivos de exemplo (incluindo arquivo corrompido).
 
 **Entrega:** biblioteca funcional e persistente.
 
+Notas: a API é `GET /songs?q=`, `GET /songs/{id}`, `POST /songs/import` (caminho do arquivo) e `DELETE /songs/{id}`; erros com código (`duplicate`, `invalid_audio`, `unsupported_format`, `file_not_found`, `tool_unavailable`). A busca ignora maiúsculas e acentos. A normalização para WAV 44,1 kHz (ADR 0003) acontece no início do job de separação (Fase 3), não na importação. Um teste na tela com navegador real achou um bug de threads do SQLite que os testes de API não pegavam (corrigido e coberto por teste de concorrência).
+
 ### Fase 3 — Separação por IA (Sprint 3)
 
-- [ ] Interface `Separator` + implementação Demucs.
-- [ ] Fila de jobs com **um worker** (separação é pesada), com cancelamento e retomada após reinício.
-- [ ] Progresso via WebSocket; erros claros na UI.
-- [ ] Detectar dispositivo (CUDA / CPU) e informar ao usuário.
-- [ ] Gerenciador de modelo: baixar no primeiro uso, verificar integridade, mostrar progresso.
-- [ ] Salvar `vocals.flac` e `instrumental.flac` com a mesma duração e taxa do original.
-- [ ] Teste automático: soma das stems ≈ original, duração idêntica ao sample.
-- [ ] Reprocessar uma música.
+- [x] Interface `Separator` + implementação Demucs (processo separado: cancelável e devolve a VRAM ao terminar).
+- [x] Fila de jobs com **um worker**, com cancelamento (na fila e em execução). *Retomada após reinício:* jobs que estavam rodando viram "falhos (interrompido)" e os que estavam na fila continuam sozinhos.
+- [x] Progresso na UI (consulta a cada 1 s enquanto há job ativo, no lugar do WebSocket planejado: mais simples e suficiente); erros claros na UI com "Tentar de novo".
+- [ ] Detectar dispositivo (CUDA / CPU) e informar ao usuário. *(hoje o Demucs escolhe sozinho; `KARAOKE_DEVICE` força cuda/cpu/mps)*
+- [ ] Gerenciador de modelo: baixar no primeiro uso com progresso e verificar integridade. *(hoje baixa sozinho na primeira separação, para `%LOCALAPPDATA%\dev.karaokestudio.app\models`, sem progresso próprio)*
+- [x] Salvar `vocals.flac` e `instrumental.flac` (24 bits) em `songs/<id>/stems/`, a partir do WAV 44,1 kHz estéreo normalizado.
+- [ ] Teste automático com Demucs real: soma das stems ≈ original e mesma duração (`tests/test_demucs_real.py`, roda só com `uv sync --group ml`; **ainda não executado**).
+- [x] Reprocessar uma música ("Refazer").
 
 **Entrega:** músicas importadas ficam prontas para karaokê.
 
+Notas: API `POST /songs/{id}/separate?force=`, `GET /jobs?active=`, `GET /jobs/{id}`, `POST /jobs/{id}/cancel`. Não dá para remover uma música com job ativo (erro `song_busy`). O Demucs real **não foi executado no ambiente de desenvolvimento**: o leitor de progresso e o cancelamento foram testados com um programa falso que imita a saída do tqdm; a primeira separação de verdade no seu PC é o teste que falta.
+
 ### Fase 4 — Player e mixer (Sprint 4) — **primeiro MVP**
 
-- [ ] Motor Rust: decodificar as stems (symphonia) e mixar em um único callback de áudio.
-- [ ] Comandos: play, pause, seek, volume master, volume vocal, volume instrumental.
-- [ ] Eventos de posição e nível para a UI (taxa limitada, ex. 30 Hz).
-- [ ] Presets: tradicional (0%), referência (20%), cantar junto (50%).
-- [ ] Seleção do dispositivo de saída.
-- [ ] Teste de sincronia: reprodução longa sem deriva; seek repetido sem estalos (fade curto).
-- [ ] Fila de reprodução básica e histórico.
+- [x] Motor Rust (`apps/desktop/src-tauri/audio-engine`, sem dependência do Tauri): decodifica as stems com symphonia (FLAC, MP3, WAV), reamostra uma vez ao carregar (rubato) e mixa as duas faixas num único callback de áudio (cpal).
+- [x] Comandos: tocar, pausar, seek, volume geral, volume da voz e do instrumental (suavizados, sem estalo).
+- [x] Eventos de posição e nível para a UI a ~30 Hz (`player-event`).
+- [x] Presets: Tradicional (voz 0%), Referência (20%), Cantar junto (50%).
+- [x] Seleção do dispositivo de saída (a música pode sair na caixa de som) e de entrada (microfone do headset), salvas em `audio-settings.json`; teste de nível do microfone. *A entrada só é usada para o microfone ao cantar na Fase 6.*
+- [x] Teste de sincronia (lógica): 10 minutos renderizados em blocos de tamanhos variados, com posição exata e amostras idênticas à fonte; 40 seeks seguidos sem estalo; pausa/retomada e troca de música com fade de 8 ms.
+- [x] Fila de reprodução básica e histórico (histórico e volumes ficam salvos).
+- [ ] **Ainda não validado no PC:** a ligação com o Tauri (`player.rs`) não compilou aqui (o sandbox não tem as bibliotecas do WebView); o motor foi testado só em lógica, sem placa de som. Falta ouvir de verdade e checar sincronia voz × instrumental.
+- [ ] Compensar a latência da saída na posição mostrada (importante para as letras da Fase 5).
 
 **Entrega (marco do plano original):** importar, separar, tocar as duas faixas sincronizadas com volumes independentes.
 
+Notas: as músicas ficam na memória decodificadas (≈ 45 MB por minuto por faixa a 48 kHz): uma música de 5 min usa ~230 MB com as duas faixas. Ao trocar de dispositivo de saída, a música é recarregada na nova taxa e volta ao ponto onde estava. Endpoint novo: `GET /songs/{id}/audio` (caminhos dos arquivos).
+
 ### Fase 5 — Letras e análise (Sprint 5)
 
-- [ ] Cliente LRCLIB: busca por artista + título + duração; cache local; tratamento offline.
-- [ ] Parser LRC; exibição da linha atual, próximas linhas, rolagem suave.
-- [ ] Ajuste manual de offset (± ms) salvo por música.
-- [ ] Alternativa para letra sem timestamp (exibição estática).
+- [x] Cliente LRCLIB: busca por artista + título + duração; cache local; tratamento offline. *(testado só com respostas simuladas; a rede do ambiente de desenvolvimento não alcança o LRCLIB — validar na sua máquina.)*
+- [x] Parser LRC; exibição da linha atual, próximas linhas, rolagem suave.
+- [x] Ajuste manual de offset (± ms) salvo por música.
+- [x] Alternativa para letra sem timestamp (exibição estática) e letra colada manualmente.
 - [ ] BPM e tonalidade com Librosa, marcados como sugestão editável.
 - [ ] Transposição conforme a decisão da Fase 0 (tempo real no motor ou pré-render).
 - [ ] Seletor de tonalidade na tela principal.
@@ -431,4 +439,4 @@ Conclusões:
 
 ## 10. Próximo passo
 
-**Fase 2 (importação e biblioteca):** SQLite com migrações, importação de MP3/WAV/FLAC (seletor nativo e arrastar e soltar), metadados, duplicatas por hash e tela da biblioteca.
+**Fase 5a (letras) em validação:** abrir a aba "Letra" com uma música tocando (precisa de internet na primeira busca). Depois seguem a Fase 5b (BPM e tom com Librosa) e 5c (transposição, que exige decisão técnica: tempo real no motor ou pré-render).

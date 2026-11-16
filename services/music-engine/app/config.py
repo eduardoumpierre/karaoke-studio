@@ -36,6 +36,10 @@ class Settings:
     def log_dir(self) -> Path:
         return self.data_dir / "logs"
 
+    @property
+    def db_path(self) -> Path:
+        return self.data_dir / "library.db"
+
     @classmethod
     def from_env(cls) -> Settings:
         token = os.environ.get("KARAOKE_TOKEN", "")
