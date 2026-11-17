@@ -71,12 +71,25 @@ def test_cancel_kills_the_process_quickly(tmp_path):
     assert time.time() - start < 4
 
 
-def test_real_command_shape(tmp_path):
+def test_real_command_shape(tmp_path, monkeypatch):
+    monkeypatch.delenv("KARAOKE_DEVICE", raising=False)
     cmd = DemucsSeparator(tmp_path, device="cuda").command(tmp_path / "a.wav", tmp_path / "o")
     assert cmd[1:3] == ["-m", "demucs"]
     assert "--two-stems=vocals" in cmd and "htdemucs" in cmd
     assert cmd[cmd.index("-d") + 1] == "cuda"
+    monkeypatch.setattr(sys, "platform", "linux")
     assert "-d" not in DemucsSeparator(tmp_path, device=None).command(tmp_path / "a.wav", tmp_path)
+
+
+def test_macos_defaults_to_cpu(tmp_path, monkeypatch):
+    # O htdemucs falha na GPU (MPS) do Mac com o torch fixado; ver default_device().
+    monkeypatch.delenv("KARAOKE_DEVICE", raising=False)
+    monkeypatch.setattr(sys, "platform", "darwin")
+    cmd = DemucsSeparator(tmp_path).command(tmp_path / "a.wav", tmp_path / "o")
+    assert cmd[cmd.index("-d") + 1] == "cpu"
+    monkeypatch.setenv("KARAOKE_DEVICE", "mps")
+    cmd = DemucsSeparator(tmp_path).command(tmp_path / "a.wav", tmp_path / "o")
+    assert cmd[cmd.index("-d") + 1] == "mps"
 
 
 def test_unavailable_reason_mentions_install(tmp_path, monkeypatch):

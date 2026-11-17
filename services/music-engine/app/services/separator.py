@@ -18,6 +18,18 @@ from typing import Protocol
 
 from .audio_tools import NO_WINDOW, AudioToolError, Cancelled, stop_process
 
+
+def default_device() -> str | None:
+    """Dispositivo do Demucs quando KARAOKE_DEVICE não está definido.
+
+    No macOS o Demucs escolhe a GPU (MPS) sozinho, mas o htdemucs falha nela com o
+    torch 2.5.1 ("Output channels > 65536 not supported at the MPS device"), e
+    PYTORCH_ENABLE_MPS_FALLBACK não resolve. Então usamos a CPU. Nos outros sistemas
+    deixamos o Demucs decidir (CUDA quando houver).
+    """
+    return "cpu" if sys.platform == "darwin" else None
+
+
 log = logging.getLogger("karaoke.demucs")
 
 ProgressFn = Callable[[float], None]
@@ -57,7 +69,7 @@ class DemucsSeparator:
 
     def __init__(self, data_dir: Path, device: str | None = None) -> None:
         self.data_dir = data_dir
-        self.device = device or os.environ.get("KARAOKE_DEVICE") or None
+        self.device = device or os.environ.get("KARAOKE_DEVICE") or default_device()
 
     def unavailable_reason(self) -> str | None:
         if importlib.util.find_spec("demucs") is None:
