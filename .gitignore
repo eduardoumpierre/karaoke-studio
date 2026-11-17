@@ -20,7 +20,7 @@ data/
 *.log
 
 # Modelos e audio de teste
-models/
+/models/
 *.wav
 *.flac
 *.mp3
